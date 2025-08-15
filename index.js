@@ -3,6 +3,7 @@ import {
   ActionRowBuilder, ButtonBuilder, ButtonStyle,
   ChannelType, Client, GatewayIntentBits, PermissionFlagsBits
 } from 'discord.js';
+import { EmbedBuilder } from 'discord.js';
 
 // Minimal-Intents (keine privilegierten Intents nötig)
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
