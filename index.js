@@ -132,23 +132,93 @@ client.once('ready', () => console.log(`✅ Eingeloggt als ${client.user.tag}`))
 
 client.on('interactionCreate', async (i) => {
   try {
-    if (i.isChatInputCommand()) {
-      if (i.commandName === 'setup2k') {
-        await i.reply({ content: 'Erstelle Struktur…', ephemeral: true });
-        await createStructure(i.guild);
-        await i.followUp({ content: '✅ Struktur fertig!', ephemeral: true });
-        return;
+    // BUTTONS zuerst behandeln (damit sie nicht von den Command-Returns "verschluckt" werden)
+    if (i.isButton()) {
+      const roleName = mapCustomIdToRoleName(i.customId);
+      if (!roleName) {
+        // minimale, schnelle Antwort -> kein Timeout
+        return i.reply({ content: 'Unbekannter Button.', flags: 64 /* ephemeral */ });
       }
-      if (i.commandName === 'setuproles') {
-        await i.reply({ content: 'Lege Rollen & Buttons an…', ephemeral: true });
-        const parent = await ensureCategory(i.guild, '📢 Info & Regeln');
-        const roleChannel = await ensureText(i.guild, '🧩│rolle-zuweisen', parent);
-        await ensureRoles(i.guild);
-        await postRoleMessage(roleChannel);
-        await i.followUp({ content: '✅ Rollen-Buttons stehen in **#🧩│rolle-zuweisen**.', ephemeral: true });
-        return;
+
+      const role = i.guild.roles.cache.find(r => r.name === roleName);
+      const member = i.member; // ohne GuildMembers-Intent
+
+      if (!role) {
+        return i.reply({ content: `Rolle **${roleName}** existiert nicht.`, flags: 64 });
+      }
+
+      const hasRole = member.roles.cache.has(role.id);
+      if (hasRole) {
+        await member.roles.remove(role);
+        return i.reply({ content: `❎ Rolle **${roleName}** entfernt.`, flags: 64 });
+      } else {
+        await member.roles.add(role);
+        return i.reply({ content: `✅ Rolle **${roleName}** hinzugefügt.`, flags: 64 });
       }
     }
+
+    // Nur Slash-Commands ab hier
+    if (!i.isChatInputCommand()) return;
+
+    // -------- /setup2k --------
+    if (i.commandName === 'setup2k') {
+      try {
+        await i.deferReply({ ephemeral: true });             // sofort bestätigen
+        await createStructure(i.guild);
+        await i.editReply('✅ Struktur fertig!');
+      } catch (err) {
+        console.error('setup2k error:', err);
+        if (i.deferred || i.replied) {
+          await i.editReply('❌ Fehler beim Erstellen der Struktur. Prüfe meine Rechte (**Manage Channels**).');
+        } else {
+          await i.reply({ content: '❌ Fehler beim Erstellen der Struktur.', flags: 64 });
+        }
+      }
+      return;
+    }
+
+    // -------- /setuproles --------
+    if (i.commandName === 'setuproles') {
+      try {
+        await i.deferReply({ ephemeral: true });             // sofort bestätigen
+
+        const parent = await ensureCategory(i.guild, '📢 Info & Regeln');
+        const roleChannel = await ensureText(i.guild, '🧩│rolle-zuweisen', parent);
+
+        // Schreibrechte sicherstellen (hilft, falls Kategorie streng ist)
+        const me = await i.guild.members.fetchMe();
+        await roleChannel.permissionOverwrites.edit(i.guild.roles.everyone, { SendMessages: true }).catch(() => {});
+        await roleChannel.permissionOverwrites.edit(me.roles.highest, { SendMessages: true, ManageChannels: true }).catch(() => {});
+
+        await ensureRoles(i.guild);
+        await postRoleMessage(roleChannel);
+
+        await i.editReply('✅ Rollen & Buttons sind bereit in **#🧩│rolle-zuweisen**.');
+      } catch (err) {
+        console.error('setuproles error:', err);
+        const msg = (err?.code === 50013)
+          ? '❌ Fehlende Berechtigungen. Gib mir **Manage Roles** & **Manage Channels** und setz meine Rolle **oberhalb** der zu vergebenden Rollen.'
+          : '❌ Fehler beim Erstellen der Rollen/Buttons.';
+        if (i.deferred || i.replied) {
+          await i.editReply(msg);
+        } else {
+          await i.reply({ content: msg, flags: 64 });
+        }
+      }
+      return;
+    }
+  } catch (err) {
+    console.error('Fehler in interactionCreate:', err);
+    try {
+      if (i.deferred) {
+        await i.editReply('❌ Unerwarteter Fehler.');
+      } else if (!i.replied) {
+        await i.reply({ content: '❌ Unerwarteter Fehler.', flags: 64 });
+      }
+    } catch {}
+  }
+});
+
     if (i.isButton()) {
       const roleName = mapCustomIdToRoleName(i.customId);
       if (!roleName) return i.reply({ content: 'Unbekannter Button.', ephemeral: true });
