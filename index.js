@@ -1,53 +1,54 @@
 import 'dotenv/config';
 import { Client, GatewayIntentBits } from 'discord.js';
 
-// === Token holen & prüfen ===
-const raw = process.env.DISCORD_TOKEN ?? '';
-const token = raw.trim(); // entfernt unsichtbare Spaces/Zeilenumbrüche
+// === Token holen & säubern ===
+const rawToken = process.env.DISCORD_TOKEN ?? '';
+const token = rawToken.trim();
 
-function mask(s, keep = 6) {
-  if (!s) return '<empty>';
-  if (s.length <= keep * 2) return s.replace(/./g, '•');
-  return s.slice(0, keep) + '…' + s.slice(-keep);
+// Token-Preview maskieren (nur für Log)
+function mask(str, keep = 4) {
+  if (!str) return '<leer>';
+  if (str.length <= keep * 2) return str.replace(/./g, '•');
+  return str.slice(0, keep) + '…' + str.slice(-keep);
 }
 
 const diagnostics = {
-  present: !!raw,
-  length: token.length,
-  dotCount: (token.match(/\./g) || []).length,
-  hasSpaces: /\s/.test(token),
-  startsWithBotPrefix: token.startsWith('Bot '), // darf NICHT so sein!
-  maskedPreview: mask(token),
+  gesetzt: !!rawToken,
+  länge: token.length,
+  punktAnzahl: (token.match(/\./g) || []).length,
+  hatLeerzeichen: /\s/.test(token),
+  startetMitBot: token.startsWith('Bot '),
+  vorschau: mask(token)
 };
 
-console.log('🔎 TOKEN-DIAGNOSTIK:', diagnostics);
+console.log('🔍 TOKEN-DIAGNOSE:', diagnostics);
 
-// **HARTE VALIDIERUNG** (Discord-Bot-Token hat 2 Punkte)
-if (!diagnostics.present) {
-  console.error('❌ Kein DISCORD_TOKEN gesetzt (Railway Variables).');
+// === Validierungen ===
+if (!diagnostics.gesetzt) {
+  console.error('❌ Kein DISCORD_TOKEN gesetzt. In Railway unter Variables hinzufügen.');
   process.exit(1);
 }
-if (diagnostics.startsWithBotPrefix) {
-  console.error('❌ DISCORD_TOKEN darf NICHT mit "Bot " anfangen. Nur den reinen Token eintragen.');
+if (diagnostics.startetMitBot) {
+  console.error('❌ Token darf NICHT mit "Bot " beginnen – nur den reinen Token eintragen.');
   process.exit(1);
 }
-if (diagnostics.dotCount !== 2) {
-  console.error('❌ Token-Format falsch: Ein gültiger Bot-Token hat GENAU zwei Punkte (a.b.c).');
+if (diagnostics.punktAnzahl !== 2) {
+  console.error('❌ Falsches Token-Format – es muss genau 2 Punkte haben (a.b.c).');
   process.exit(1);
 }
-if (diagnostics.hasSpaces) {
-  console.error('❌ Token enthält Leerzeichen/Zeilenumbrüche. Bitte in Railway ohne Extra-Zeichen eintragen.');
+if (diagnostics.hatLeerzeichen) {
+  console.error('❌ Token enthält Leerzeichen oder Zeilenumbrüche. Bitte ohne Extras eintragen.');
   process.exit(1);
 }
 
-// === Wenn wir hier ankommen, versuchen wir Login ===
+// === Bot starten ===
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
 client.once('ready', () => {
   console.log(`✅ Eingeloggt als ${client.user.tag}`);
 });
 
-client.login(token).catch((err) => {
+client.login(token).catch(err => {
   console.error('❌ Login-Fehler:', err);
   process.exit(1);
 });
