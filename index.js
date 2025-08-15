@@ -4,10 +4,8 @@ import {
   ChannelType, Client, GatewayIntentBits, PermissionFlagsBits
 } from 'discord.js';
 
-// Minimal-Intents (keine Privileged Intents nötig)
+// Minimal-Intents (keine privilegierten Intents nötig)
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
-
-// Token sicher verwenden
 const TOKEN = (process.env.DISCORD_TOKEN || '').trim();
 
 // ---------- Helpers ----------
@@ -114,20 +112,22 @@ function buildButtonsRow(items, prefix) {
 }
 
 async function postRoleMessage(channel) {
+  // Plattform
   await channel.send({
     content: '**Plattform wählen**:',
     components: [
       buildButtonsRow(
         [
-          { id: 'ps5', label: 'PS5', emoji: '🎮' },
+          { id: 'ps5',  label: 'PS5',  emoji: '🎮' },
           { id: 'xbox', label: 'Xbox', emoji: '🎮' },
-          { id: 'pc',  label: 'PC',  emoji: '💻' },
+          { id: 'pc',   label: 'PC',   emoji: '💻' },
         ],
         'platform'
       ),
     ],
   });
 
+  // Länder
   await channel.send({
     content: '**Land wählen**:',
     components: [
@@ -142,6 +142,7 @@ async function postRoleMessage(channel) {
     ],
   });
 
+  // Position
   await channel.send({
     content: '**Build-Position wählen**:',
     components: [
@@ -154,6 +155,23 @@ async function postRoleMessage(channel) {
           { id: 'c',  label: 'C',  emoji: '🏀' },
         ],
         'position'
+      ),
+    ],
+  });
+
+  // Spielstil / Modus (inkl. MyTeam)
+  await channel.send({
+    content: '**Spielstil/Modus wählen**:',
+    components: [
+      buildButtonsRow(
+        [
+          { id: 'casual',   label: 'Casual',       emoji: '😎' },
+          { id: 'comp',     label: 'Comp/Pro-Am',  emoji: '🏆' },
+          { id: 'mycareer', label: 'MyCareer',     emoji: '⏳' },
+          { id: 'parkrec',  label: 'Park/Rec',     emoji: '🌆' },
+          { id: 'myteam',   label: 'MyTeam',       emoji: '🃏' }, // NEU
+        ],
+        'style'
       ),
     ],
   });
@@ -176,14 +194,21 @@ async function ensureRoles(guild) {
   await ensureRole(guild, 'SF');
   await ensureRole(guild, 'PF');
   await ensureRole(guild, 'C');
+
+  // Spielstil / Modus (inkl. MyTeam)
+  await ensureRole(guild, 'Casual');
+  await ensureRole(guild, 'Comp/Pro-Am');
+  await ensureRole(guild, 'MyCareer');
+  await ensureRole(guild, 'Park/Rec');
+  await ensureRole(guild, 'MyTeam'); // NEU
 }
 
 function mapCustomIdToRoleName(customId) {
   const [prefix, id] = customId.split(':');
   if (prefix === 'platform') {
-    if (id === 'ps5') return 'PS5';
+    if (id === 'ps5')  return 'PS5';
     if (id === 'xbox') return 'Xbox';
-    if (id === 'pc')  return 'PC';
+    if (id === 'pc')   return 'PC';
   }
   if (prefix === 'country') {
     if (id === 'de') return 'Deutschland';
@@ -197,22 +222,35 @@ function mapCustomIdToRoleName(customId) {
     if (id === 'pf') return 'PF';
     if (id === 'c')  return 'C';
   }
+  if (prefix === 'style') {
+    if (id === 'casual')   return 'Casual';
+    if (id === 'comp')     return 'Comp/Pro-Am';
+    if (id === 'mycareer') return 'MyCareer';
+    if (id === 'parkrec')  return 'Park/Rec';
+    if (id === 'myteam')   return 'MyTeam';
+  }
   return null;
 }
 
 // ---------- Bot Events ----------
-client.once('ready', () => console.log(`✅ Eingeloggt als ${client.user.tag}`));
+client.once('ready', () => {
+  console.log(`✅ Eingeloggt als ${client.user.tag}`);
+  // Präsenz setzen (sichtbar in Mitgliederliste)
+  client.user.setPresence({
+    activities: [{ name: 'NBA 2K GSA • /setuproles' }],
+    status: 'online',
+  });
+});
 
 client.on('interactionCreate', async (i) => {
   try {
-    // Buttons zuerst (sehr schnelle Antworten -> kein Timeout)
+    // Buttons: sofortige, kurze Antwort
     if (i.isButton()) {
       const roleName = mapCustomIdToRoleName(i.customId);
       if (!roleName) return i.reply({ content: 'Unbekannter Button.', flags: 64 });
 
       const role = i.guild.roles.cache.find(r => r.name === roleName);
       const member = i.member; // ohne GuildMembers-Intent
-
       if (!role) return i.reply({ content: `Rolle **${roleName}** existiert nicht.`, flags: 64 });
 
       const hasRole = member.roles.cache.has(role.id);
@@ -228,7 +266,7 @@ client.on('interactionCreate', async (i) => {
     // Nur Slash-Commands ab hier
     if (!i.isChatInputCommand()) return;
 
-    // SOFORT bestätigen → verhindert „App reagiert nicht“
+    // Sofort bestätigen → verhindert „App reagiert nicht“
     if (!i.deferred && !i.replied) {
       await i.deferReply({ ephemeral: true });
     }
@@ -242,7 +280,7 @@ client.on('interactionCreate', async (i) => {
       const parent      = await ensureCategory(i.guild, '📢 Info & Regeln');
       const roleChannel = await ensureText(i.guild, '🧩│rolle-zuweisen', parent);
 
-      // Schreibrechte im Rollenkanal absichern (hilft bei strengen Kategorien)
+      // Schreibrechte im Rollenkanal absichern
       const me = await i.guild.members.fetchMe();
       await roleChannel.permissionOverwrites
         .edit(i.guild.roles.everyone, { SendMessages: true })
@@ -256,11 +294,9 @@ client.on('interactionCreate', async (i) => {
       return i.editReply('✅ Rollen & Buttons sind bereit in **#🧩│rolle-zuweisen**.');
     }
 
-    // Fallback (sollte nie nötig sein)
     await i.editReply('❓ Unbekannter Befehl.');
   } catch (err) {
     console.error('interactionCreate error:', err);
-    // Immer irgendwas zurückschicken, damit kein Timeout entsteht
     try {
       if (i.deferred || i.replied) {
         await i.editReply('❌ Fehler bei der Ausführung.');
