@@ -25,6 +25,17 @@ async function ensureText(guild, name, parent) {
   return ch;
 }
 
+// Ankündigungen als Announcement-Kanal
+async function ensureAnnouncement(guild, name, parent) {
+  // Falls bereits als Text existiert, nutze ihn; sonst als Announcement anlegen
+  let ch = guild.channels.cache.find(
+    c => (c.type === ChannelType.GuildAnnouncement || c.type === ChannelType.GuildText) &&
+         c.name === name && c.parentId === parent.id
+  );
+  if (!ch) ch = await guild.channels.create({ name, type: ChannelType.GuildAnnouncement, parent: parent.id });
+  return ch;
+}
+
 async function ensureVoice(guild, name, parent) {
   let ch = guild.channels.cache.find(
     c => c.type === ChannelType.GuildVoice && c.name === name && c.parentId === parent.id
@@ -63,6 +74,45 @@ async function lockReadOnly(channel, guild, me) {
 }
 
 /* =========================
+   Texte & Embeds
+   ========================= */
+function buildRulesEmbed() {
+  return new EmbedBuilder()
+    .setColor(0xDC143C)
+    .setTitle('📜 Regeln – NBA2K DACH Community')
+    .setDescription(
+      [
+        '**Willkommen! Bitte halte dich an diese Regeln, damit es für alle angenehm bleibt.**',
+        '',
+        '1️⃣ **Respekt & Umgangston**\n• Kein Toxic / Beleidigungen • Keine Diskriminierung/Hassrede',
+        '2️⃣ **Kein Spam / Flood**\n• Keine Spam-Pings • Werbung nur mit Admin-Genehmigung',
+        '3️⃣ **Team-Suche & Builds**\n• Nutze die vorgesehenen Kanäle (Konsole/Position/Modus angeben)',
+        '4️⃣ **Voice-Chat**\n• Kein Schreien/Trollen • Bei Störgeräuschen Push-to-Talk verwenden',
+        '5️⃣ **Inhalte & Links**\n• Keine illegalen/pornografischen/urheberrechtswidrigen Inhalte',
+        '6️⃣ **Namen & Avatare**\n• Keine beleidigenden/unangemessenen Namen oder Profilbilder',
+        '7️⃣ **Admins & Mods**\n• Befolge Anweisungen des Teams • Diskussionen privat klären',
+        '8️⃣ **Fairplay**\n• Kein Cheating/Glitch-Abuse • Regeln in Matches & Ligen beachten',
+        '',
+        '⚠️ **Verstöße**: Verwarnung, Mute, Kick oder Bann möglich.',
+        'Viel Spaß & gute Games! 🏀🇩🇪🇨🇭🇦🇹'
+      ].join('\n')
+    )
+    .setFooter({ text: 'NBA2K DACH Community • Be fair. Be team.' })
+    .setTimestamp(Date.now());
+}
+
+function buildAnnouncementsText() {
+  return [
+    'Willkommen im **#ankündigungen**-Kanal 📢',
+    'Hier findest du alle wichtigen Updates der **NBA2K DACH Community**:',
+    '• Turnier-Ankündigungen\n• Neue Features & Bot-Updates\n• Community-Events\n• Wichtige Regeländerungen',
+    '',
+    '📲 **Tipp:** Klicke oben auf „Folgen“, um keine Neuigkeit zu verpassen!',
+    '👀 Nur Admins und Mods können hier posten.'
+  ].join('\n');
+}
+
+/* =========================
    Server-Struktur
    ========================= */
 async function createStructure(guild) {
@@ -75,7 +125,7 @@ async function createStructure(guild) {
   const events = await ensureCategory(guild, '🏆 Events');
 
   const chRules = await ensureText(guild, '📜│regeln', info);
-  const chNews  = await ensureText(guild, '📢│ankündigungen', info);
+  const chNews  = await ensureAnnouncement(guild, '📢│ankündigungen', info); // Announcement-Kanal
   await ensureText(guild, '🎯│willkommen', info);
 
   await ensureText(guild, '💬│chat', allg);
@@ -96,8 +146,24 @@ async function createStructure(guild) {
   await ensureText(guild, '📅│turniere', events);
   await ensureText(guild, '🎥│highlight-clips', events);
 
+  // Read-only setzen
   await lockReadOnly(chRules, guild, me);
   await lockReadOnly(chNews, guild, me);
+
+  // Inhalte automatisch posten
+  try {
+    const rulesEmbed = buildRulesEmbed();
+    const rulesMsg = await chRules.send({ embeds: [rulesEmbed] });
+    await rulesMsg.pin().catch(() => {}); // optional pinnen (wenn Rechte)
+  } catch (e) {
+    console.warn('⚠️ Konnte Regeln-Embed nicht posten/pinnen:', e?.message || e);
+  }
+
+  try {
+    await chNews.send(buildAnnouncementsText());
+  } catch (e) {
+    console.warn('⚠️ Konnte Ankündigungs-Text nicht posten:', e?.message || e);
+  }
 }
 
 /* =========================
@@ -239,40 +305,12 @@ function mapCustomIdToRoleName(customId) {
 }
 
 /* =========================
-   Regeln-Embed
-   ========================= */
-function buildRulesEmbed() {
-  return new EmbedBuilder()
-    .setColor(0xDC143C)
-    .setTitle('📜 Regeln – NBA2K GSA Community')
-    .setDescription(
-      [
-        '**Willkommen! Bitte halte dich an diese Regeln, damit es für alle angenehm bleibt.**',
-        '',
-        '1️⃣ **Respekt & Umgangston**\n• Kein Toxic / Beleidigungen • Keine Diskriminierung/Hassrede',
-        '2️⃣ **Kein Spam / Flood**\n• Keine Spam-Pings • Werbung nur mit Admin-Genehmigung',
-        '3️⃣ **Team-Suche & Builds**\n• Nutze die vorgesehenen Kanäle (Konsole/Position/Modus angeben)',
-        '4️⃣ **Voice-Chat**\n• Kein Schreien/Trollen • Bei Störgeräuschen Push-to-Talk verwenden',
-        '5️⃣ **Inhalte & Links**\n• Keine illegalen/pornografischen/urheberrechtswidrigen Inhalte',
-        '6️⃣ **Namen & Avatare**\n• Keine beleidigenden/unangemessenen Namen oder Profilbilder',
-        '7️⃣ **Admins & Mods**\n• Befolge Anweisungen des Teams • Diskussionen privat klären',
-        '8️⃣ **Fairplay**\n• Kein Cheating/Glitch-Abuse • Regeln in Matches & Ligen beachten',
-        '',
-        '⚠️ **Verstöße**: Verwarnung, Mute, Kick oder Bann möglich.',
-        'Viel Spaß & gute Games! 🏀🇩🇪🇨🇭🇦🇹'
-      ].join('\n')
-    )
-    .setFooter({ text: 'NBA2K GSA • Be fair. Be team.' })
-    .setTimestamp(Date.now());
-}
-
-/* =========================
    Bot Events
    ========================= */
 client.once('ready', () => {
   console.log(`✅ Eingeloggt als ${client.user.tag}`);
   client.user.setPresence({
-    activities: [{ name: 'NBA 2K GSA • /setuproles' }],
+    activities: [{ name: 'NBA 2K DACH • /setuproles' }],
     status: 'online',
   });
 });
@@ -308,7 +346,7 @@ client.on('interactionCreate', async (i) => {
 
     if (i.commandName === 'setup2k') {
       await createStructure(i.guild);
-      return i.editReply('✅ Struktur fertig!');
+      return i.editReply('✅ Struktur & Infos gesetzt! (Regeln/Ankündigungen sind live)');
     }
 
     if (i.commandName === 'setuproles') {
@@ -327,25 +365,6 @@ client.on('interactionCreate', async (i) => {
       await ensureRoles(i.guild);
       await postRoleMessage(roleChannel);
       return i.editReply('✅ Rollen & Buttons sind bereit in **#🧩│rolle-zuweisen**.');
-    }
-
-    if (i.commandName === 'postrules') {
-      try {
-        const infoCat = await ensureCategory(i.guild, '📢 Info & Regeln');
-        const rulesCh = await ensureText(i.guild, '📜│regeln', infoCat);
-
-        const embed = buildRulesEmbed();
-        const msg = await rulesCh.send({ embeds: [embed] });
-        await msg.pin().catch(() => {}); // optional pinnen
-
-        return i.editReply('✅ Regeln-Embed wurde in **#📜│regeln** gepostet.');
-      } catch (err) {
-        console.error('postrules error:', err);
-        const msg = (err?.code === 50013)
-          ? '❌ Fehlende Berechtigungen. Gib mir **Send Messages** (und optional **Manage Messages** zum Pinnen) in #📜│regeln.'
-          : '❌ Konnte das Regeln-Embed nicht posten.';
-        return i.editReply(msg);
-      }
     }
 
     // Fallback
