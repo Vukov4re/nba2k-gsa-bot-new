@@ -1,15 +1,16 @@
 import 'dotenv/config';
 import {
   ActionRowBuilder, ButtonBuilder, ButtonStyle,
-  ChannelType, Client, GatewayIntentBits, PermissionFlagsBits
+  ChannelType, Client, GatewayIntentBits, PermissionFlagsBits, EmbedBuilder
 } from 'discord.js';
-import { EmbedBuilder } from 'discord.js';
 
 // Minimal-Intents (keine privilegierten Intents nötig)
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 const TOKEN = (process.env.DISCORD_TOKEN || '').trim();
 
-// ---------- Helpers ----------
+/* =========================
+   Helpers: Channels & Roles
+   ========================= */
 async function ensureCategory(guild, name) {
   let cat = guild.channels.cache.find(c => c.type === ChannelType.GuildCategory && c.name === name);
   if (!cat) cat = await guild.channels.create({ name, type: ChannelType.GuildCategory });
@@ -38,7 +39,7 @@ async function ensureRole(guild, name) {
   return role;
 }
 
-// Sperrt Kanal für @everyone (read-only), aber crasht nicht bei fehlenden Rechten
+// Kanal für @everyone write-locken (read-only) – ohne Crash bei fehlenden Rechten
 async function lockReadOnly(channel, guild, me) {
   try {
     const canManage = me.permissionsIn(channel).has(PermissionFlagsBits.ManageChannels);
@@ -61,7 +62,9 @@ async function lockReadOnly(channel, guild, me) {
   }
 }
 
-// ---------- Struktur ----------
+/* =========================
+   Server-Struktur
+   ========================= */
 async function createStructure(guild) {
   const me = await guild.members.fetchMe();
 
@@ -97,7 +100,9 @@ async function createStructure(guild) {
   await lockReadOnly(chNews, guild, me);
 }
 
-// ---------- Rollen/Buttons ----------
+/* =========================
+   Rollen & Buttons
+   ========================= */
 function buildButtonsRow(items, prefix) {
   const row = new ActionRowBuilder();
   for (const { id, label, emoji } of items) {
@@ -170,7 +175,7 @@ async function postRoleMessage(channel) {
           { id: 'comp',     label: 'Comp/Pro-Am',  emoji: '🏆' },
           { id: 'mycareer', label: 'MyCareer',     emoji: '⏳' },
           { id: 'parkrec',  label: 'Park/Rec',     emoji: '🌆' },
-          { id: 'myteam',   label: 'MyTeam',       emoji: '🃏' }, // NEU
+          { id: 'myteam',   label: 'MyTeam',       emoji: '🃏' },
         ],
         'style'
       ),
@@ -196,12 +201,12 @@ async function ensureRoles(guild) {
   await ensureRole(guild, 'PF');
   await ensureRole(guild, 'C');
 
-  // Spielstil / Modus (inkl. MyTeam)
+  // Spielstil / Modus
   await ensureRole(guild, 'Casual');
   await ensureRole(guild, 'Comp/Pro-Am');
   await ensureRole(guild, 'MyCareer');
   await ensureRole(guild, 'Park/Rec');
-  await ensureRole(guild, 'MyTeam'); // NEU
+  await ensureRole(guild, 'MyTeam');
 }
 
 function mapCustomIdToRoleName(customId) {
@@ -233,10 +238,39 @@ function mapCustomIdToRoleName(customId) {
   return null;
 }
 
-// ---------- Bot Events ----------
+/* =========================
+   Regeln-Embed
+   ========================= */
+function buildRulesEmbed() {
+  return new EmbedBuilder()
+    .setColor(0xDC143C)
+    .setTitle('📜 Regeln – NBA2K GSA Community')
+    .setDescription(
+      [
+        '**Willkommen! Bitte halte dich an diese Regeln, damit es für alle angenehm bleibt.**',
+        '',
+        '1️⃣ **Respekt & Umgangston**\n• Kein Toxic / Beleidigungen • Keine Diskriminierung/Hassrede',
+        '2️⃣ **Kein Spam / Flood**\n• Keine Spam-Pings • Werbung nur mit Admin-Genehmigung',
+        '3️⃣ **Team-Suche & Builds**\n• Nutze die vorgesehenen Kanäle (Konsole/Position/Modus angeben)',
+        '4️⃣ **Voice-Chat**\n• Kein Schreien/Trollen • Bei Störgeräuschen Push-to-Talk verwenden',
+        '5️⃣ **Inhalte & Links**\n• Keine illegalen/pornografischen/urheberrechtswidrigen Inhalte',
+        '6️⃣ **Namen & Avatare**\n• Keine beleidigenden/unangemessenen Namen oder Profilbilder',
+        '7️⃣ **Admins & Mods**\n• Befolge Anweisungen des Teams • Diskussionen privat klären',
+        '8️⃣ **Fairplay**\n• Kein Cheating/Glitch-Abuse • Regeln in Matches & Ligen beachten',
+        '',
+        '⚠️ **Verstöße**: Verwarnung, Mute, Kick oder Bann möglich.',
+        'Viel Spaß & gute Games! 🏀🇩🇪🇨🇭🇦🇹'
+      ].join('\n')
+    )
+    .setFooter({ text: 'NBA2K GSA • Be fair. Be team.' })
+    .setTimestamp(Date.now());
+}
+
+/* =========================
+   Bot Events
+   ========================= */
 client.once('ready', () => {
   console.log(`✅ Eingeloggt als ${client.user.tag}`);
-  // Präsenz setzen (sichtbar in Mitgliederliste)
   client.user.setPresence({
     activities: [{ name: 'NBA 2K GSA • /setuproles' }],
     status: 'online',
@@ -245,7 +279,7 @@ client.once('ready', () => {
 
 client.on('interactionCreate', async (i) => {
   try {
-    // Buttons: sofortige, kurze Antwort
+    // Buttons: schnelle, kurze Antwort (ephemeral via flags: 64)
     if (i.isButton()) {
       const roleName = mapCustomIdToRoleName(i.customId);
       if (!roleName) return i.reply({ content: 'Unbekannter Button.', flags: 64 });
@@ -295,22 +329,5 @@ client.on('interactionCreate', async (i) => {
       return i.editReply('✅ Rollen & Buttons sind bereit in **#🧩│rolle-zuweisen**.');
     }
 
-    await i.editReply('❓ Unbekannter Befehl.');
-  } catch (err) {
-    console.error('interactionCreate error:', err);
-    try {
-      if (i.deferred || i.replied) {
-        await i.editReply('❌ Fehler bei der Ausführung.');
-      } else {
-        await i.reply({ content: '❌ Fehler bei der Ausführung.', flags: 64 });
-      }
-    } catch {}
-  }
-});
-
-// Extra-Logs
-process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e));
-process.on('uncaughtException', (e) => console.error('uncaughtException:', e));
-
-// Start
-client.login(TOKEN);
+    if (i.commandName === 'postrules') {
+      try
