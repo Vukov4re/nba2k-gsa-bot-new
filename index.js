@@ -25,9 +25,8 @@ async function ensureText(guild, name, parent) {
   return ch;
 }
 
-// Ankündigungen als Announcement-Kanal
+// Ankündigungen als Announcement-Kanal (falls möglich)
 async function ensureAnnouncement(guild, name, parent) {
-  // Falls bereits als Text existiert, nutze ihn; sonst als Announcement anlegen
   let ch = guild.channels.cache.find(
     c => (c.type === ChannelType.GuildAnnouncement || c.type === ChannelType.GuildText) &&
          c.name === name && c.parentId === parent.id
@@ -125,7 +124,7 @@ async function createStructure(guild) {
   const events = await ensureCategory(guild, '🏆 Events');
 
   const chRules = await ensureText(guild, '📜│regeln', info);
-  const chNews  = await ensureAnnouncement(guild, '📢│ankündigungen', info); // Announcement-Kanal
+  const chNews  = await ensureAnnouncement(guild, '📢│ankündigungen', info);
   await ensureText(guild, '🎯│willkommen', info);
 
   await ensureText(guild, '💬│chat', allg);
@@ -146,15 +145,14 @@ async function createStructure(guild) {
   await ensureText(guild, '📅│turniere', events);
   await ensureText(guild, '🎥│highlight-clips', events);
 
-  // Read-only setzen
+  // Read-only setzen & Inhalte posten
   await lockReadOnly(chRules, guild, me);
   await lockReadOnly(chNews, guild, me);
 
-  // Inhalte automatisch posten
   try {
     const rulesEmbed = buildRulesEmbed();
     const rulesMsg = await chRules.send({ embeds: [rulesEmbed] });
-    await rulesMsg.pin().catch(() => {}); // optional pinnen (wenn Rechte)
+    await rulesMsg.pin().catch(() => {});
   } catch (e) {
     console.warn('⚠️ Konnte Regeln-Embed nicht posten/pinnen:', e?.message || e);
   }
@@ -186,7 +184,7 @@ function buildButtonsRow(items, prefix) {
 async function postRoleMessage(channel) {
   // Plattform
   await channel.send({
-    content: '**Plattform wählen**:',
+    content: '**Plattform wählen:**',
     components: [
       buildButtonsRow(
         [
@@ -199,24 +197,9 @@ async function postRoleMessage(channel) {
     ],
   });
 
-  // Länder
-  await channel.send({
-    content: '**Land wählen**:',
-    components: [
-      buildButtonsRow(
-        [
-          { id: 'de', label: 'Deutschland', emoji: '🇩🇪' },
-          { id: 'ch', label: 'Schweiz',     emoji: '🇨🇭' },
-          { id: 'at', label: 'Österreich',  emoji: '🇦🇹' },
-        ],
-        'country'
-      ),
-    ],
-  });
-
   // Position
   await channel.send({
-    content: '**Build-Position wählen**:',
+    content: '**Build-Position wählen:**',
     components: [
       buildButtonsRow(
         [
@@ -231,9 +214,9 @@ async function postRoleMessage(channel) {
     ],
   });
 
-  // Spielstil / Modus (inkl. MyTeam)
+  // Spielstil / Modus
   await channel.send({
-    content: '**Spielstil/Modus wählen**:',
+    content: '**Spielstil/Modus wählen:**',
     components: [
       buildButtonsRow(
         [
@@ -247,9 +230,25 @@ async function postRoleMessage(channel) {
       ),
     ],
   });
+
+  // Land – GANZ UNTEN & Primary (Pflicht zur Freischaltung)
+  const countryRow = new ActionRowBuilder()
+    .addComponents(
+      new ButtonBuilder().setCustomId('country:de').setLabel('Deutschland').setStyle(ButtonStyle.Primary).setEmoji('🇩🇪'),
+      new ButtonBuilder().setCustomId('country:ch').setLabel('Schweiz').setStyle(ButtonStyle.Primary).setEmoji('🇨🇭'),
+      new ButtonBuilder().setCustomId('country:at').setLabel('Österreich').setStyle(ButtonStyle.Primary).setEmoji('🇦🇹'),
+    );
+
+  await channel.send({
+    content: '**Land wählen (Pflicht für Freischaltung):**',
+    components: [countryRow],
+  });
 }
 
 async function ensureRoles(guild) {
+  // Freischalt-Rolle
+  await ensureRole(guild, 'Mitglied');
+
   // Plattform
   await ensureRole(guild, 'PS5');
   await ensureRole(guild, 'Xbox');
@@ -317,21 +316,42 @@ client.once('ready', () => {
 
 client.on('interactionCreate', async (i) => {
   try {
-    // Buttons: schnelle, kurze Antwort (ephemeral via flags: 64)
+    // Buttons: schnelle, kurze Antwort
     if (i.isButton()) {
+      const [prefix] = i.customId.split(':'); // wichtig für Freischaltung
       const roleName = mapCustomIdToRoleName(i.customId);
       if (!roleName) return i.reply({ content: 'Unbekannter Button.', flags: 64 });
 
       const role = i.guild.roles.cache.find(r => r.name === roleName);
-      const member = i.member; // ohne GuildMembers-Intent
+      const member = i.member;
       if (!role) return i.reply({ content: `Rolle **${roleName}** existiert nicht.`, flags: 64 });
 
       const hasRole = member.roles.cache.has(role.id);
+
       if (hasRole) {
         await member.roles.remove(role);
         return i.reply({ content: `❎ Rolle **${roleName}** entfernt.`, flags: 64 });
       } else {
         await member.roles.add(role);
+
+        // 🔓 Freischalten NUR bei Länderrolle
+        if (prefix === 'country') {
+          const access = await ensureRole(i.guild, 'Mitglied');
+          await member.roles.add(access).catch(() => {});
+
+          // optionale Block-Rolle entfernen, falls vorhanden (z. B. "ohne-rolle")
+          const block = i.guild.roles.cache.find(r =>
+            r.name.toLowerCase().includes('ohne') && r.name.toLowerCase().includes('rolle')
+          );
+          if (block) await member.roles.remove(block).catch(() => {});
+
+          return i.reply({
+            content: `✅ **${roleName}** gesetzt. Du bist freigeschaltet!  
+Wähle jetzt noch **Plattform**, **Position** & **Spielstil** über die Buttons.`,
+            flags: 64
+          });
+        }
+
         return i.reply({ content: `✅ Rolle **${roleName}** hinzugefügt.`, flags: 64 });
       }
     }
