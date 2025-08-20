@@ -3,7 +3,8 @@ import {
   Client, GatewayIntentBits, Events,
   ChannelType, PermissionFlagsBits,
   ActionRowBuilder, ButtonBuilder, ButtonStyle,
-  EmbedBuilder, PermissionFlagsBits
+  EmbedBuilder, PermissionsBitField,
+  REST, Routes, SlashCommandBuilder
 } from 'discord.js';
 
 import { BASE_ROLES, BUTTON_LABELS, REP, VERIFY_TEXT } from './config/roles.js';
