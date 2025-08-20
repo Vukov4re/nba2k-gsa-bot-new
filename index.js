@@ -1,21 +1,49 @@
-// index.js (stabil, ohne disallowed intents)
+Here are the final, copy‑paste ready files plus a minimal README and package.json snippet. They include:
+
+* Idempotent `/setup2k` (no duplicate posts; messages are upserted via markers)
+* REP system: `/create_rep_roles`, `/rep`, `/repclear`
+* Button role pickers (platform / position / style / country)
+* Welcome message on join
+* Railway/Node ready
+
+**Environment variables** (Railway → Variables or local .env):
+
+```
+DISCORD_TOKEN=your_bot_token
+CLIENT_ID=your_application_id
+GUILD_ID=your_guild_id   # for fast command deploy
+TEMPLATE_ROLE=REP-Vorlage
+```
+
+---
+
+## index.js
+
+```js
+// index.js
 import 'dotenv/config';
 import {
   Client, GatewayIntentBits, Events,
   ChannelType, PermissionFlagsBits,
   ActionRowBuilder, ButtonBuilder, ButtonStyle,
-  EmbedBuilder
+  EmbedBuilder, PermissionsBitField
 } from 'discord.js';
 
 // Token aus DISCORD_TOKEN oder TOKEN
 const TOKEN = (process.env.DISCORD_TOKEN || process.env.TOKEN || '').trim();
+const TEMPLATE_ROLE = process.env.TEMPLATE_ROLE || 'REP-Vorlage';
 
-// Nur erlaubte Intents: Guilds + GuildMembers (für Welcome)
+if (!TOKEN) {
+  console.error('❌ Missing DISCORD_TOKEN/TOKEN');
+  process.exit(1);
+}
+
+// Client mit Intents
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
 });
 
-/* ---------- Helpers ---------- */
+/* ---------- Helpers (Allgemein) ---------- */
 async function ensureRole(guild, name) {
   let role = guild.roles.cache.find(r => r.name === name);
   if (!role) role = await guild.roles.create({ name });
@@ -39,7 +67,26 @@ async function lockReadOnly(channel, guild, me) {
   } catch {}
 }
 
-/* ---------- Inhalte ---------- */
+/* ---------- Upsert für Nachrichten (verhindert Dopplungen) ---------- */
+async function upsertBotMessage(channel, { content, embeds, components, marker }) {
+  const fetched = await channel.messages.fetch({ limit: 50 }).catch(() => null);
+  const existing = fetched?.find(m => m.author?.id === channel.client.user.id && m.content?.includes(marker));
+
+  const payload = {};
+  if (content) payload.content = `${content}\n\n${marker}`;
+  if (embeds) payload.embeds = embeds;
+  if (components) payload.components = components;
+
+  if (existing) {
+    return existing.edit(payload);
+  } else {
+    const msg = await channel.send(payload);
+    try { await msg.pin(); } catch {}
+    return msg;
+  }
+}
+
+/* ---------- Embeds für /setup2k ---------- */
 function buildRulesEmbed() {
   return new EmbedBuilder()
     .setColor(0xDC143C)
@@ -72,7 +119,7 @@ function buildAnnouncementsText() {
   ].join('\n');
 }
 
-/* ---------- Struktur (nur für /setup2k) ---------- */
+/* ---------- Struktur (für /setup2k) ---------- */
 async function createInfoAndButtons(guild, targetChannel) {
   const me = await guild.members.fetchMe();
   const info = await ensureCategory(guild, '📢 Info & Regeln');
@@ -82,16 +129,21 @@ async function createInfoAndButtons(guild, targetChannel) {
   await lockReadOnly(chRules, guild, me);
   await lockReadOnly(chNews, guild, me);
 
-  try { await chRules.send({ embeds: [buildRulesEmbed()] }); } catch {}
-  try { await chNews.send(buildAnnouncementsText()); } catch {}
+  await upsertBotMessage(chRules, {
+    embeds: [buildRulesEmbed()],
+    marker: '[[BOT_RULES_V1]]'
+  });
 
-  // Rollen vorbereiten
+  await upsertBotMessage(chNews, {
+    content: buildAnnouncementsText(),
+    marker: '[[BOT_NEWS_V1]]'
+  });
+
   await ensureRole(guild, 'Mitglied');
   for (const r of ['PS5','Xbox','PC','Deutschland','Schweiz','Österreich','PG','SG','SF','PF','C','Casual','Comp/Pro-Am','MyCareer','Park/Rec','MyTeam']) {
     await ensureRole(guild, r);
   }
 
-  // Buttons posten
   await postRoleMessage(targetChannel);
 }
 
@@ -110,26 +162,31 @@ function buildButtonsRow(items, prefix) {
 }
 
 async function postRoleMessage(channel) {
-  await channel.send({
+  await upsertBotMessage(channel, {
     content: '**Plattform wählen:**',
     components: [buildButtonsRow(
       [{id:'ps5',label:'PS5',emoji:'🎮'},{id:'xbox',label:'Xbox',emoji:'🎮'},{id:'pc',label:'PC',emoji:'💻'}],
       'platform'
     )],
+    marker: '[[BOT_ROLES_PLATFORM_V1]]'
   });
-  await channel.send({
+
+  await upsertBotMessage(channel, {
     content: '**Build-Position wählen:**',
     components: [buildButtonsRow(
       [{id:'pg',label:'PG',emoji:'🏀'},{id:'sg',label:'SG',emoji:'🏀'},{id:'sf',label:'SF',emoji:'🏀'},{id:'pf',label:'PF',emoji:'🏀'},{id:'c',label:'C',emoji:'🏀'}],
       'position'
     )],
+    marker: '[[BOT_ROLES_POSITION_V1]]'
   });
-  await channel.send({
+
+  await upsertBotMessage(channel, {
     content: '**Spielstil/Modus wählen:**',
     components: [buildButtonsRow(
       [{id:'casual',label:'Casual',emoji:'😎'},{id:'comp',label:'Comp/Pro-Am',emoji:'🏆'},{id:'mycareer',label:'MyCareer',emoji:'⏳'},{id:'parkrec',label:'Park/Rec',emoji:'🌆'},{id:'myteam',label:'MyTeam',emoji:'🃏'}],
       'style'
     )],
+    marker: '[[BOT_ROLES_STYLE_V1]]'
   });
 
   const countryRow = new ActionRowBuilder().addComponents(
@@ -137,10 +194,15 @@ async function postRoleMessage(channel) {
     new ButtonBuilder().setCustomId('country:ch').setLabel('Schweiz').setStyle(ButtonStyle.Primary).setEmoji('🇨🇭'),
     new ButtonBuilder().setCustomId('country:at').setLabel('Österreich').setStyle(ButtonStyle.Primary).setEmoji('🇦🇹'),
   );
-  await channel.send({ content: '**Land wählen (Pflicht für Freischaltung):**', components: [countryRow] });
+
+  await upsertBotMessage(channel, {
+    content: '**Land wählen (Pflicht für Freischaltung):**',
+    components: [countryRow],
+    marker: '[[BOT_ROLES_COUNTRY_V1]]'
+  });
 }
 
-/* ---------- Mapping ---------- */
+/* ---------- Mapping für Buttons ---------- */
 function mapCustomIdToRoleName(customId) {
   const [prefix, id] = customId.split(':');
   if (prefix === 'platform') return id === 'pc' ? 'PC' : id.toUpperCase();
@@ -160,24 +222,126 @@ function mapCustomIdToRoleName(customId) {
   return null;
 }
 
+/* ---------- REP-System ---------- */
+const EMOJI_BY_RANK = {
+  'rookie': '🟢',
+  'pro': '🔵',
+  'all-star': '🟣',
+  'superstar': '🟠',
+  'elite': '🔴',
+  'legend': '🟡'
+};
+const RANK_ORDER = ['rookie','pro','all-star','superstar','elite','legend'];
+const LEVELS = [1,2,3,4,5];
+
+const normRank = (t) => t.trim().toLowerCase()
+  .replaceAll('all star', 'all-star')
+  .replaceAll('allstar', 'all-star');
+
+const capitalize = (s) => s.split('-').map(p => p.charAt(0).toUpperCase()+p.slice(1)).join('-');
+
+const makeRoleName = (rankKey, level) => `${EMOJI_BY_RANK[rankKey]} ${capitalize(rankKey)} ${level}`;
+
+const findRoleByRankLevel = (guild, rankKey, level) => {
+  const hyphen = `${capitalize(rankKey)} ${level}`;
+  const space  = `${capitalize(rankKey).replace('-', ' ')} ${level}`;
+  return guild.roles.cache.find(r => r.name.endsWith(hyphen) || r.name.endsWith(space)) || null;
+};
+
+const isRepRoleName = (name) =>
+  RANK_ORDER.some(r =>
+    LEVELS.some(lv =>
+      name.endsWith(`${capitalize(r)} ${lv}`) || name.endsWith(`${capitalize(r).replace('-', ' ')} ${lv}`)
+    )
+  );
+
+const removeAllRepRoles = async (member) => {
+  const toRemove = member.roles.cache.filter(r => isRepRoleName(r.name));
+  if (toRemove.size) {
+    await member.roles.remove([...toRemove.values()], 'REP update (only one active REP role)');
+  }
+};
+
 /* ---------- Events ---------- */
 client.once('ready', () => {
   console.log(`✅ Eingeloggt als ${client.user.tag}`);
   client.user.setPresence({ activities: [{ name: 'NBA 2K DACH • /setup2k' }], status: 'online' });
 });
 
-// Slash-Command /setup2k
+// Slash-Commands
 client.on(Events.InteractionCreate, async (i) => {
   try {
     if (!i.isChatInputCommand()) return;
-    if (!i.deferred && !i.replied) await i.deferReply({ ephemeral: true });
 
     if (i.commandName === 'setup2k') {
+      if (!i.deferred && !i.replied) await i.deferReply({ ephemeral: true });
       await createInfoAndButtons(i.guild, i.channel);
-      return i.editReply('✅ Rollen-Auswahl & Infos wurden gepostet.');
+      return i.editReply('✅ Rollen-Auswahl & Infos wurden aktualisiert.');
     }
 
-    return i.editReply('❓ Unbekannter Befehl.');
+    if (i.commandName === 'create_rep_roles') {
+      if (!i.memberPermissions.has(PermissionsBitField.Flags.Administrator)) {
+        return i.reply({ content: '⛔ Dir fehlt **Administrator**.', ephemeral: true });
+      }
+      const guild = i.guild;
+      const template = guild.roles.cache.find(r => r.name === TEMPLATE_ROLE);
+      if (!template) {
+        return i.reply({ content: `⚠️ Vorlage-Rolle **${TEMPLATE_ROLE}** nicht gefunden.`, ephemeral: true });
+      }
+      await i.deferReply({ ephemeral: true });
+      let created = 0;
+      for (const r of RANK_ORDER) {
+        for (const lv of LEVELS) {
+          if (findRoleByRankLevel(guild, r, lv)) continue;
+          await guild.roles.create({
+            name: makeRoleName(r, lv),
+            permissions: template.permissions,
+            color: template.color,
+            hoist: true,
+            reason: 'NBA2K25 REP setup'
+          });
+          created++;
+        }
+      }
+      return i.editReply(`✅ REP-Rollen erstellt. Neu: **${created}**.`);
+    }
+
+    if (i.commandName === 'rep') {
+      if (!i.memberPermissions.has(PermissionsBitField.Flags.ManageRoles)) {
+        return i.reply({ content: '⛔ Dir fehlt **Manage Roles**.', ephemeral: true });
+      }
+      const user = i.options.getMember('user');
+      const rankKey = normRank(i.options.getString('rank'));
+      const level = parseInt(i.options.getString('level'), 10);
+
+      if (!user) return i.reply({ content: '❌ User nicht gefunden.', ephemeral: true });
+      if (!RANK_ORDER.includes(rankKey)) return i.reply({ content: '❌ Unbekannter Rang.', ephemeral: true });
+      if (!LEVELS.includes(level)) return i.reply({ content: '❌ Stufe muss 1–5 sein.', ephemeral: true });
+
+      const role = findRoleByRankLevel(i.guild, rankKey, level);
+      if (!role) {
+        return i.reply({ content: `⚠️ Rolle **${capitalize(rankKey)} ${level}** existiert nicht. Führe zuerst /create_rep_roles aus.`, ephemeral: true });
+      }
+      if (i.guild.members.me.roles.highest.comparePositionTo(role) <= 0) {
+        return i.reply({ content: '❌ Meine Bot-Rolle steht **unter** der Zielrolle.', ephemeral: true });
+      }
+
+      await i.deferReply({ ephemeral: true });
+      await removeAllRepRoles(user);
+      await user.roles.add(role, `Set REP to ${role.name}`);
+      return i.editReply(`✅ ${user} ist jetzt **${role.name}**. (Andere REP-Rollen entfernt)`);
+    }
+
+    if (i.commandName === 'repclear') {
+      if (!i.memberPermissions.has(PermissionsBitField.Flags.ManageRoles)) {
+        return i.reply({ content: '⛔ Dir fehlt **Manage Roles**.', ephemeral: true });
+      }
+      const user = i.options.getMember('user');
+      if (!user) return i.reply({ content: '❌ User nicht gefunden.', ephemeral: true });
+      await removeAllRepRoles(user);
+      return i.reply({ content: `🧹 Alle REP-Rollen bei ${user} entfernt.`, ephemeral: true });
+    }
+
   } catch (err) {
     console.error('interaction (command) error:', err);
     try { (i.deferred ? i.editReply : i.reply)({ content: '❌ Fehler bei der Ausführung.', ephemeral: true }); } catch {}
@@ -188,68 +352,7 @@ client.on(Events.InteractionCreate, async (i) => {
 client.on(Events.InteractionCreate, async (i) => {
   try {
     if (!i.isButton()) return;
-
     const [prefix] = i.customId.split(':');
     if (prefix === 'goto') {
-      const roleChannel = i.guild.channels.cache.find(ch => ch.type === ChannelType.GuildText && ch.name.includes('rolle-zuweisen'));
-      return i.reply({ content: roleChannel ? `➡ Bitte wähle hier: ${roleChannel}` : '❌ Rollen-Kanal nicht gefunden.', flags: 64 });
-    }
 
-    const roleName = mapCustomIdToRoleName(i.customId);
-    if (!roleName) return i.reply({ content: 'Unbekannter Button.', flags: 64 });
-
-    let role = i.guild.roles.cache.find(r => r.name === roleName);
-    if (!role) role = await i.guild.roles.create({ name: roleName });
-
-    const member = i.member;
-    const hasRole = member.roles.cache.has(role.id);
-
-    if (hasRole) {
-      await member.roles.remove(role);
-      return i.reply({ content: `❎ Rolle **${roleName}** entfernt.`, flags: 64 });
-    }
-
-    await member.roles.add(role);
-
-    if (prefix === 'country') {
-      const access = await ensureRole(i.guild, 'Mitglied');
-      await member.roles.add(access).catch(() => {});
-      const block = i.guild.roles.cache.find(r => r.name.toLowerCase().includes('ohne') && r.name.toLowerCase().includes('rolle'));
-      if (block) await member.roles.remove(block).catch(() => {});
-      return i.reply({
-        content: `✅ **${roleName}** gesetzt. Du bist freigeschaltet!\nWähle optional noch **Plattform**, **Position** & **Spielstil**.`,
-        flags: 64
-      });
-    }
-
-    return i.reply({ content: `✅ Rolle **${roleName}** hinzugefügt.`, flags: 64 });
-  } catch (err) {
-    console.error('interaction (button) error:', err);
-    try { await i.reply({ content: '❌ Fehler bei der Ausführung.', flags: 64 }); } catch {}
-  }
-});
-
-// Willkommensnachricht
-client.on(Events.GuildMemberAdd, async (member) => {
-  try {
-    const welcome = member.guild.channels.cache.find(ch => ch.type === ChannelType.GuildText && ch.name.includes('willkommen'));
-    if (!welcome) return;
-    const roleChannel = member.guild.channels.cache.find(ch => ch.type === ChannelType.GuildText && ch.name.includes('rolle-zuweisen'));
-
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('goto:roles').setLabel('➡ Rollen auswählen').setStyle(ButtonStyle.Primary)
-    );
-
-    await welcome.send({
-      content:
-        `👋 Willkommen ${member} in der **NBA2K DACH Community**!\n` +
-        `Bitte wähle zuerst dein **Land** in ${roleChannel ? `${roleChannel}` : '#rolle-zuweisen'}, um freigeschaltet zu werden.\n` +
-        `Danach kannst du Plattform, Position & Spielstil hinzufügen.`,
-      components: [row]
-    });
-  } catch (err) {
-    console.error('guildMemberAdd error:', err);
-  }
-});
-
-client.login(TOKEN);
+```
