@@ -1,40 +1,31 @@
 import 'dotenv/config';
 import { REST, Routes, SlashCommandBuilder } from 'discord.js';
+import { REP } from './config/roles.js';
 
-const TOKEN = (process.env.DISCORD_TOKEN || process.env.TOKEN || '').trim();
+const TOKEN    = (process.env.DISCORD_TOKEN || process.env.TOKEN || '').trim();
 const CLIENT_ID = (process.env.CLIENT_ID || '').trim();
 const GUILD_ID  = (process.env.GUILD_ID  || '').trim();
 
 if (!TOKEN || !CLIENT_ID || !GUILD_ID) {
-  console.error('❌ Fehlende ENV Variablen. Benötigt: DISCORD_TOKEN (oder TOKEN), CLIENT_ID, GUILD_ID');
+  console.error('❌ ENV fehlt: DISCORD_TOKEN (oder TOKEN), CLIENT_ID, GUILD_ID');
   process.exit(1);
 }
 
-const RANKS = [
-  { name: 'Rookie', value: 'rookie' },
-  { name: 'Pro', value: 'pro' },
-  { name: 'All-Star', value: 'all-star' },
-  { name: 'Superstar', value: 'superstar' },
-  { name: 'Elite', value: 'elite' },
-  { name: 'Legend', value: 'legend' }
-];
-const LEVELS = [1,2,3,4,5].map(n => ({ name: String(n), value: String(n) }));
+const RANKS = Object.keys(REP.display).map(k => ({ name: REP.display[k], value: k }));
+const LEVELS = REP.levels.map(n => ({ name: String(n), value: String(n) }));
 
 const commands = [
- new SlashCommandBuilder()
-  .setName('setup2k')
-  .setDescription('Postet/aktualisiert Regeln & Rollen-Buttons (idempotent).')
-  .addChannelOption(o =>
-    o.setName('zielkanal')
-     .setDescription('Kanal, in den die Rollen-Buttons gepostet/aktualisiert werden')
-     .addChannelTypes(0) // 0 = GuildText
-     .setRequired(false)
-  ),
+  new SlashCommandBuilder()
+    .setName('setup2k')
+    .setDescription('Postet/aktualisiert Regeln & Rollen-Buttons (idempotent).'),
 
+  new SlashCommandBuilder()
+    .setName('setuprep')
+    .setDescription('Richtet nur den REP-Verifizierungskanal ein (idempotent).'),
 
   new SlashCommandBuilder()
     .setName('create_rep_roles')
-    .setDescription('Erstellt alle 30 REP-Rollen (Rookie 1–5 … Legend 1–5) nach Vorlage-Rolle.'),
+    .setDescription('Erstellt alle REP-Rollen (Rookie 1–5 … Legend 1–5) nach Vorlage.'),
 
   new SlashCommandBuilder()
     .setName('rep')
@@ -59,18 +50,14 @@ const commands = [
 
 const rest = new REST({ version: '10' }).setToken(TOKEN);
 
-async function main() {
+(async () => {
   try {
     console.log('🔁 Registriere Slash-Commands (guild)…');
-    await rest.put(
-      Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
-      { body: commands }
-    );
+    await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
     console.log('✅ Slash-Commands registriert für Guild:', GUILD_ID);
+    process.exit(0);
   } catch (e) {
     console.error('❌ Deploy-Fehler:', e);
     process.exit(1);
   }
-}
-
-main();
+})();
