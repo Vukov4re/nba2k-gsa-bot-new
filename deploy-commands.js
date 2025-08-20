@@ -4,51 +4,77 @@ import { REST, Routes, SlashCommandBuilder } from 'discord.js';
 
 
 const TOKEN = (process.env.DISCORD_TOKEN || process.env.TOKEN || '').trim();
-const CLIENT_ID = process.env.CLIENT_ID;
-const GUILD_ID = process.env.GUILD_ID;
+const CLIENT_ID = (process.env.CLIENT_ID || '').trim();
+const GUILD_ID = (process.env.GUILD_ID || '').trim();
 
 
 if (!TOKEN || !CLIENT_ID || !GUILD_ID) {
-console.error('❌ Missing env: DISCORD_TOKEN, CLIENT_ID, or GUILD_ID');
+console.error('❌ Fehlende ENV Variablen. Benötigt: DISCORD_TOKEN (oder TOKEN), CLIENT_ID, GUILD_ID');
 process.exit(1);
 }
+
+
+const RANKS = [
+{ name: 'Rookie', value: 'rookie' },
+{ name: 'Pro', value: 'pro' },
+{ name: 'All-Star', value: 'all-star' },
+{ name: 'Superstar', value: 'superstar' },
+{ name: 'Elite', value: 'elite' },
+{ name: 'Legend', value: 'legend' }
+];
+const LEVELS = [1,2,3,4,5].map(n => ({ name: String(n), value: String(n) }));
 
 
 const commands = [
 new SlashCommandBuilder()
 .setName('setup2k')
-.setDescription('Server-Struktur & Rollen-Auswahl einrichten (idempotent).'),
+.setDescription('Postet/aktualisiert Regeln & Rollen-Buttons (idempotent).'),
 
 
 new SlashCommandBuilder()
 .setName('create_rep_roles')
-.setDescription('Erstellt alle REP-Rollen von Rookie 1–5 bis Legend 1–5.'),
+.setDescription('Erstellt alle 30 REP-Rollen (Rookie 1–5 … Legend 1–5) nach Vorlage-Rolle.'),
 
 
 new SlashCommandBuilder()
 .setName('rep')
-.setDescription('Setzt einem User eine REP-Rolle und entfernt andere.')
-.addUserOption(opt => opt.setName('user').setDescription('User').setRequired(true))
-.addStringOption(opt => opt.setName('rank').setDescription('Rang (rookie, pro, all-star, superstar, elite, legend)').setRequired(true))
-.addStringOption(opt => opt.setName('level').setDescription('Level 1–5').setRequired(true)),
+.setDescription('Setzt die REP-Rolle eines Users (andere REP-Rollen werden entfernt).')
+.addUserOption(o => o.setName('user').setDescription('Ziel-User').setRequired(true))
+.addStringOption(o => {
+o.setName('rank').setDescription('Rang').setRequired(true);
+RANKS.forEach(r => o.addChoices(r));
+return o;
+})
+.addStringOption(o => {
+o.setName('level').setDescription('Stufe (1–5)').setRequired(true);
+LEVELS.forEach(l => o.addChoices(l));
+return o;
+}),
 
 
 new SlashCommandBuilder()
 .setName('repclear')
-.setDescription('Entfernt alle REP-Rollen von einem User.')
-.addUserOption(opt => opt.setName('user').setDescription('User').setRequired(true))
-].map(cmd => cmd.toJSON());
+.setDescription('Entfernt alle REP-Rollen eines Users.')
+.addUserOption(o => o.setName('user').setDescription('Ziel-User').setRequired(true)),
+].map(c => c.toJSON());
 
 
 const rest = new REST({ version: '10' }).setToken(TOKEN);
 
 
-(async () => {
+async function main() {
 try {
-console.log('🔄 Deploying commands...');
-await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
-console.log('✅ Slash commands deployed!');
-} catch (err) {
-console.error('❌ Error deploying commands:', err);
+console.log('🔁 Registriere Slash-Commands (guild)…');
+await rest.put(
+Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
+{ body: commands }
+);
+console.log('✅ Slash-Commands registriert für Guild:', GUILD_ID);
+} catch (e) {
+console.error('❌ Deploy-Fehler:', e);
+process.exit(1);
 }
-})();
+}
+
+
+main();
