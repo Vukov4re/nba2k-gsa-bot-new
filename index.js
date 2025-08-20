@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import {
   Client, GatewayIntentBits, Events,
-  ChannelType, PermissionFlagsBitField, // NOTE: diese BitField-Klasse
+  import { ..., ChannelType, PermissionFlagsBits, ... } from 'discord.js'; // NOTE: diese BitField-Klasse
   ActionRowBuilder, ButtonBuilder, ButtonStyle,
   EmbedBuilder, PermissionsBitField
 } from 'discord.js';
