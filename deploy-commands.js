@@ -21,9 +21,16 @@ const RANKS = [
 const LEVELS = [1,2,3,4,5].map(n => ({ name: String(n), value: String(n) }));
 
 const commands = [
-  new SlashCommandBuilder()
-    .setName('setup2k')
-    .setDescription('Postet/aktualisiert Regeln & Rollen-Buttons (idempotent).'),
+ new SlashCommandBuilder()
+  .setName('setup2k')
+  .setDescription('Postet/aktualisiert Regeln & Rollen-Buttons (idempotent).')
+  .addChannelOption(o =>
+    o.setName('zielkanal')
+     .setDescription('Kanal, in den die Rollen-Buttons gepostet/aktualisiert werden')
+     .addChannelTypes(0) // 0 = GuildText
+     .setRequired(false)
+  ),
+
 
   new SlashCommandBuilder()
     .setName('create_rep_roles')
