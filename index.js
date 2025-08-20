@@ -3,7 +3,7 @@ import {
   Client, GatewayIntentBits, Events,
   ChannelType, PermissionFlagsBits,
   ActionRowBuilder, ButtonBuilder, ButtonStyle,
-  EmbedBuilder, PermissionsBitField
+  EmbedBuilder, PermissionFlagsBits
 } from 'discord.js';
 
 import { BASE_ROLES, BUTTON_LABELS, REP, VERIFY_TEXT } from './config/roles.js';
@@ -286,16 +286,40 @@ client.on(Events.InteractionCreate, async (i) => {
       return i.editReply(`✅ Setup aktualisiert.\n• Rollen-Buttons in ${chRoles}\n• Verifizierung in ${chVerify}`);
     }
 
-    if (i.commandName === 'setuprep') {
-      if (!i.memberPermissions.has(PermissionsBitField.Flags.Administrator))
-        return i.reply({ content: '⛔ Nur Admins dürfen /setuprep ausführen.', ephemeral: true });
-      if (!i.guild.members.me.permissions.has(PermissionFlagsBitField.Flags.ManageChannels))
-        return i.reply({ content: '⛔ Mir fehlt **Kanäle verwalten**.', ephemeral: true });
-
-      if (!i.deferred && !i.replied) await i.deferReply({ ephemeral: true });
-      const chVerify = await setupRepOnly(i.guild);
-      return i.editReply(`✅ REP-Verifizierungskanal eingerichtet: ${chVerify}`);
+    // im ChatInputCommand-Handler:
+if (i.commandName === 'setuprep') {
+  try {
+    // nur Admins
+    if (!i.memberPermissions.has(PermissionsBitField.Flags.Administrator)) {
+      return i.reply({ content: '⛔ Nur Admins dürfen /setuprep ausführen.', ephemeral: true });
     }
+
+    const me = i.guild.members.me;
+    // Bot braucht "Kanäle verwalten"
+    if (!me.permissions.has(PermissionFlagsBits.ManageChannels)) {
+      return i.reply({ content: '⛔ Mir fehlt **Kanäle verwalten**.', ephemeral: true });
+    }
+
+    await i.deferReply({ ephemeral: true });
+
+    // Kategorie + Kanal sicherstellen
+    const infoCat  = await ensureCategory(i.guild, BASE_ROLES.categoryInfo);
+    const chVerify = await ensureTextInCategory(i.guild, BASE_ROLES.channelVerify, infoCat);
+
+    // Hinweis-Post idempotent
+    await upsertBotMessage(chVerify, {
+      content: VERIFY_TEXT,
+      marker: '[[BOT_REP_VERIFY_INFO_V1]]'
+    });
+
+    return i.editReply(`✅ REP-Verifizierungskanal eingerichtet: ${chVerify}`);
+  } catch (e) {
+    console.error('/setuprep error:', e);
+    if (i.deferred) return i.editReply('❌ Fehler bei /setuprep (siehe Logs).');
+    return i.reply({ content: '❌ Fehler bei /setuprep (siehe Logs).', ephemeral: true });
+  }
+}
+
 
     if (i.commandName === 'create_rep_roles') {
       if (!i.memberPermissions.has(PermissionsBitField.Flags.Administrator))
