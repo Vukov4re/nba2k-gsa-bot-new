@@ -17,7 +17,12 @@ if (!TOKEN) {
 
 // Client mit Intents
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessages, // für auto-Reply im Verifizierungskanal
+    GatewayIntentBits.MessageContent  // optional, falls du Text prüfen willst
+  ],
 });
 
 /* ---------- Helpers (Allgemein) ---------- */
@@ -31,9 +36,10 @@ async function ensureCategory(guild, name) {
   if (!cat) cat = await guild.channels.create({ name, type: ChannelType.GuildCategory });
   return cat;
 }
-async function ensureText(guild, name, parent) {
-  let ch = guild.channels.cache.find(c => c.type === ChannelType.GuildText && c.name === name && c.parentId === parent.id);
-  if (!ch) ch = await guild.channels.create({ name, type: ChannelType.GuildText, parent: parent.id });
+async function ensureTextInCategory(guild, name, parent) {
+  let ch = guild.channels.cache.find(c => c.type === ChannelType.GuildText && c.name === name);
+  if (!ch) ch = await guild.channels.create({ name, type: ChannelType.GuildText, parent: parent?.id });
+  else if (parent && ch.parentId !== parent.id) await ch.setParent(parent.id).catch(() => {});
   return ch;
 }
 async function lockReadOnly(channel, guild, me) {
@@ -46,8 +52,16 @@ async function lockReadOnly(channel, guild, me) {
 
 /* ---------- Upsert für Nachrichten (verhindert Dopplungen) ---------- */
 async function upsertBotMessage(channel, { content, embeds, components, marker }) {
-  const fetched = await channel.messages.fetch({ limit: 50 }).catch(() => null);
-  const existing = fetched?.find(m => m.author?.id === channel.client.user.id && m.content?.includes(marker));
+  // 1) Pins durchsuchen (bleiben länger sichtbar)
+  const pins = await channel.messages.fetchPinned().catch(() => null);
+  const inPins = pins?.find(m => m.author?.id === channel.client.user.id && (m.content?.includes(marker) || m.embeds?.[0]?.footer?.text?.includes?.(marker)));
+
+  // 2) Neuere Nachrichten durchsuchen (erweitert auf 100)
+  let existing = inPins;
+  if (!existing) {
+    const fetched = await channel.messages.fetch({ limit: 100 }).catch(() => null);
+    existing = fetched?.find(m => m.author?.id === channel.client.user.id && m.content?.includes(marker));
+  }
 
   const payload = {};
   if (content) payload.content = `${content}\n\n${marker}`;
@@ -82,7 +96,7 @@ function buildRulesEmbed() {
       '',
       '⚠️ Verstöße: Verwarnung, Mute, Kick oder Bann. Viel Spaß! 🏀🇩🇪🇨🇭🇦🇹'
     ].join('\n'))
-    .setFooter({ text: 'NBA2K DACH Community • Be fair. Be team.' })
+    .setFooter({ text: 'NBA2K DACH Community • Be fair. Be team.  [[BOT_RULES_V1]]' }) // Marker zusätzlich in Footer
     .setTimestamp();
 }
 function buildAnnouncementsText() {
@@ -97,31 +111,53 @@ function buildAnnouncementsText() {
 }
 
 /* ---------- Struktur (für /setup2k) ---------- */
-async function createInfoAndButtons(guild, targetChannel) {
+async function createInfoAndButtons(guild) {
   const me = await guild.members.fetchMe();
-  const info = await ensureCategory(guild, '📢 Info & Regeln');
-  const chRules = await ensureText(guild, '📜│regeln', info);
-  const chNews  = await ensureText(guild, '📢│ankündigungen', info);
 
+  // Kategorie & festen Kanäle sicherstellen
+  const infoCat = await ensureCategory(guild, '📢 Info & Regeln');
+  const chRules = await ensureTextInCategory(guild, '📜│regeln', infoCat);
+  const chNews  = await ensureTextInCategory(guild, '📢│ankündigungen', infoCat);
+
+  // Rolle-zuweisen & Verifizierung als eigene Kanäle (außerhalb oder unter Info-Kat, wie du willst)
+  const chRoles = await ensureTextInCategory(guild, '🎯│rolle-zuweisen', infoCat);
+  const chVerify = await ensureTextInCategory(guild, '🧾│rep-verifizierung', infoCat);
+
+  // Schreibschutz für Regeln/News
   await lockReadOnly(chRules, guild, me);
   await lockReadOnly(chNews, guild, me);
 
+  // Regeln & News upserten
   await upsertBotMessage(chRules, {
     embeds: [buildRulesEmbed()],
     marker: '[[BOT_RULES_V1]]'
   });
-
   await upsertBotMessage(chNews, {
     content: buildAnnouncementsText(),
     marker: '[[BOT_NEWS_V1]]'
   });
 
+  // Standard-Rollen sicherstellen
   await ensureRole(guild, 'Mitglied');
   for (const r of ['PS5','Xbox','PC','Deutschland','Schweiz','Österreich','PG','SG','SF','PF','C','Casual','Comp/Pro-Am','MyCareer','Park/Rec','MyTeam']) {
     await ensureRole(guild, r);
   }
 
-  await postRoleMessage(targetChannel);
+  // Rollen-Buttons in genau diesem Kanal upserten
+  await postRoleMessage(chRoles);
+
+  // Verifizierungs-Hinweis in genau diesem Kanal upserten
+  await upsertBotMessage(chVerify, {
+    content:
+      '📌 **So bekommst du deinen REP-Rang:**\n' +
+      '1) Poste hier einen **Screenshot** deines aktuellen REP.\n' +
+      '2) Ein Mod prüft und setzt deinen Rang mit `/rep`.\n' +
+      '3) Bei Upgrade später einfach wieder Screenshot posten.\n\n' +
+      'ℹ️ Mods: `/rep user:@Name rank:<Rookie|Pro|All-Star|Superstar|Elite|Legend> level:<1–5>`',
+    marker: '[[BOT_REP_VERIFY_INFO_V1]]'
+  });
+
+  return { chRules, chNews, chRoles, chVerify };
 }
 
 function buildButtonsRow(items, prefix) {
@@ -250,33 +286,20 @@ client.on(Events.InteractionCreate, async (i) => {
   try {
     if (!i.isChatInputCommand()) return;
 
- if (i.commandName === 'setup2k') {
-  const target = i.options?.getChannel?.('zielkanal') ?? i.channel;
+    if (i.commandName === 'setup2k') {
+      // Rechte-Check (global): Kanäle verwalten + im Ziel später senden
+      if (!i.memberPermissions.has(PermissionsBitField.Flags.Administrator)) {
+        return i.reply({ content: '⛔ Nur Admins dürfen /setup2k ausführen.', ephemeral: true });
+      }
+      if (!i.guild.members.me.permissions.has(PermissionFlagsBits.ManageChannels)) {
+        return i.reply({ content: '⛔ Mir fehlt **Kanäle verwalten** (für Setup).', ephemeral: true });
+      }
 
-  // Rechte-Check am Zielkanal
-  const me = i.guild.members.me;
-  const canSend = me.permissionsIn(target).has(PermissionFlagsBits.SendMessages);
-  const canEmbed = me.permissionsIn(target).has(PermissionFlagsBits.EmbedLinks);
-  const canManageChannels = me.permissions.has(PermissionFlagsBits.ManageChannels);
+      if (!i.deferred && !i.replied) await i.deferReply({ ephemeral: true });
+      const { chRoles, chVerify } = await createInfoAndButtons(i.guild);
 
-  if (!canSend || !canEmbed) {
-    return i.reply({
-      ephemeral: true,
-      content: '⛔ Mir fehlen Rechte im Zielkanal: ' +
-        `${!canSend ? 'Nachrichten senden ' : ''}${!canEmbed ? '• Links einbetten ' : ''}`.trim()
-    });
-  }
-  if (!canManageChannels) {
-    return i.reply({
-      ephemeral: true,
-      content: '⛔ Mir fehlt **Kanäle verwalten** auf dem Server (für „📢 Info & Regeln“).'
-    });
-  }
-
-  if (!i.deferred && !i.replied) await i.deferReply({ ephemeral: true });
-  await createInfoAndButtons(i.guild, target);
-  return i.editReply(`✅ Setup aktualisiert in ${target}.`);
-}
+      return i.editReply(`✅ Setup aktualisiert.\n• Rollen-Buttons in ${chRoles}\n• Verifizierung in ${chVerify}`);
+    }
 
     if (i.commandName === 'create_rep_roles') {
       if (!i.memberPermissions.has(PermissionsBitField.Flags.Administrator)) {
@@ -381,24 +404,27 @@ client.on(Events.InteractionCreate, async (i) => {
   }
 });
 
-// Willkommensnachricht
-client.on(Events.GuildMemberAdd, async (member) => {
+/* ---------- Auto-Reply im Verifizierungskanal ---------- */
+client.on(Events.MessageCreate, async (msg) => {
   try {
-    const welcome = member.guild.channels.cache.find(ch => ch.type === ChannelType.GuildText && ch.name.includes('willkommen'));
-    if (!welcome) return;
-    const roleChannel = member.guild.channels.cache.find(ch => ch.type === ChannelType.GuildText && ch.name.includes('rolle-zuweisen'));
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('goto:roles').setLabel('➡ Rollen auswählen').setStyle(ButtonStyle.Primary)
-    );
-    await welcome.send({
-      content:
-        `👋 Willkommen ${member} in der **NBA2K DACH Community**!\n` +
-        `Bitte wähle zuerst dein **Land** in ${roleChannel ? `${roleChannel}` : '#rolle-zuweisen'}, um freigeschaltet zu werden.\n` +
-        `Danach kannst du Plattform, Position & Spielstil hinzufügen.`,
-      components: [row]
-    });
-  } catch (err) {
-    console.error('guildMemberAdd error:', err);
+    if (msg.author.bot) return;
+    if (msg.channel.type !== ChannelType.GuildText) return;
+
+    // Kanalname enthält "rep-verifiz" oder "rep-verfiz" (Tippfehler-tolerant)
+    const name = msg.channel.name.toLowerCase();
+    if (!(name.includes('rep-verifiz'))) return;
+
+    // Nur reagieren, wenn ein Attachment oder Bild-Link dabei ist
+    const hasAttachment = msg.attachments?.size > 0;
+    const hasImageUrl = /(https?:\/\/\S+\.(png|jpe?g|gif|webp))/i.test(msg.content || '');
+    if (!hasAttachment && !hasImageUrl) return;
+
+    await msg.reply(
+      '✅ **Screenshot erhalten!** Ein Mod prüft deinen REP und setzt dir die passende Rolle.\n' +
+      'ℹ️ Mods: `/rep user:@Name rank:<Rookie|Pro|All-Star|Superstar|Elite|Legend> level:<1–5>`'
+    ).catch(() => {});
+  } catch (e) {
+    console.error('verify auto-reply error:', e);
   }
 });
 
