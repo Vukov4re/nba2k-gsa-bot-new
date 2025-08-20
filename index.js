@@ -1,10 +1,11 @@
 import 'dotenv/config';
 import {
   Client, GatewayIntentBits, Events,
-  import { ..., ChannelType, PermissionFlagsBits, ... } from 'discord.js'; // NOTE: diese BitField-Klasse
+  ChannelType, PermissionFlagsBits,
   ActionRowBuilder, ButtonBuilder, ButtonStyle,
   EmbedBuilder, PermissionsBitField
 } from 'discord.js';
+
 import { BASE_ROLES, BUTTON_LABELS, REP, VERIFY_TEXT } from './config/roles.js';
 
 // Token
