@@ -1,26 +1,3 @@
-Here are the final, copy‑paste ready files plus a minimal README and package.json snippet. They include:
-
-* Idempotent `/setup2k` (no duplicate posts; messages are upserted via markers)
-* REP system: `/create_rep_roles`, `/rep`, `/repclear`
-* Button role pickers (platform / position / style / country)
-* Welcome message on join
-* Railway/Node ready
-
-**Environment variables** (Railway → Variables or local .env):
-
-```
-DISCORD_TOKEN=your_bot_token
-CLIENT_ID=your_application_id
-GUILD_ID=your_guild_id   # for fast command deploy
-TEMPLATE_ROLE=REP-Vorlage
-```
-
----
-
-## index.js
-
-```js
-// index.js
 import 'dotenv/config';
 import {
   Client, GatewayIntentBits, Events,
@@ -354,5 +331,53 @@ client.on(Events.InteractionCreate, async (i) => {
     if (!i.isButton()) return;
     const [prefix] = i.customId.split(':');
     if (prefix === 'goto') {
+      const roleChannel = i.guild.channels.cache.find(ch => ch.type === ChannelType.GuildText && ch.name.includes('rolle-zuweisen'));
+      return i.reply({ content: roleChannel ? `➡ Bitte wähle hier: ${roleChannel}` : '❌ Rollen-Kanal nicht gefunden.', flags: 64 });
+    }
+    const roleName = mapCustomIdToRoleName(i.customId);
+    if (!roleName) return i.reply({ content: 'Unbekannter Button.', flags: 64 });
+    let role = i.guild.roles.cache.find(r => r.name === roleName);
+    if (!role) role = await i.guild.roles.create({ name: roleName });
+    const member = i.member;
+    const hasRole = member.roles.cache.has(role.id);
+    if (hasRole) {
+      await member.roles.remove(role);
+      return i.reply({ content: `❎ Rolle **${roleName}** entfernt.`, flags: 64 });
+    }
+    await member.roles.add(role);
+    if (prefix === 'country') {
+      const access = await ensureRole(i.guild, 'Mitglied');
+      await member.roles.add(access).catch(() => {});
+      const block = i.guild.roles.cache.find(r => r.name.toLowerCase().includes('ohne') && r.name.toLowerCase().includes('rolle'));
+      if (block) await member.roles.remove(block).catch(() => {});
+      return i.reply({ content: `✅ **${roleName}** gesetzt. Du bist freigeschaltet!\nWähle optional noch weitere Rollen.`, flags: 64 });
+    }
+    return i.reply({ content: `✅ Rolle **${roleName}** hinzugefügt.`, flags: 64 });
+  } catch (err) {
+    console.error('interaction (button) error:', err);
+    try { await i.reply({ content: '❌ Fehler bei der Ausführung.', flags: 64 }); } catch {}
+  }
+});
 
-```
+// Willkommensnachricht
+client.on(Events.GuildMemberAdd, async (member) => {
+  try {
+    const welcome = member.guild.channels.cache.find(ch => ch.type === ChannelType.GuildText && ch.name.includes('willkommen'));
+    if (!welcome) return;
+    const roleChannel = member.guild.channels.cache.find(ch => ch.type === ChannelType.GuildText && ch.name.includes('rolle-zuweisen'));
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('goto:roles').setLabel('➡ Rollen auswählen').setStyle(ButtonStyle.Primary)
+    );
+    await welcome.send({
+      content:
+        `👋 Willkommen ${member} in der **NBA2K DACH Community**!\n` +
+        `Bitte wähle zuerst dein **Land** in ${roleChannel ? `${roleChannel}` : '#rolle-zuweisen'}, um freigeschaltet zu werden.\n` +
+        `Danach kannst du Plattform, Position & Spielstil hinzufügen.`,
+      components: [row]
+    });
+  } catch (err) {
+    console.error('guildMemberAdd error:', err);
+  }
+});
+
+client.login(TOKEN);
