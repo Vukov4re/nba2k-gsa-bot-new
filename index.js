@@ -250,11 +250,33 @@ client.on(Events.InteractionCreate, async (i) => {
   try {
     if (!i.isChatInputCommand()) return;
 
-    if (i.commandName === 'setup2k') {
-      if (!i.deferred && !i.replied) await i.deferReply({ ephemeral: true });
-      await createInfoAndButtons(i.guild, i.channel);
-      return i.editReply('✅ Rollen-Auswahl & Infos wurden aktualisiert.');
-    }
+ if (i.commandName === 'setup2k') {
+  const target = i.options?.getChannel?.('zielkanal') ?? i.channel;
+
+  // Rechte-Check am Zielkanal
+  const me = i.guild.members.me;
+  const canSend = me.permissionsIn(target).has(PermissionFlagsBits.SendMessages);
+  const canEmbed = me.permissionsIn(target).has(PermissionFlagsBits.EmbedLinks);
+  const canManageChannels = me.permissions.has(PermissionFlagsBits.ManageChannels);
+
+  if (!canSend || !canEmbed) {
+    return i.reply({
+      ephemeral: true,
+      content: '⛔ Mir fehlen Rechte im Zielkanal: ' +
+        `${!canSend ? 'Nachrichten senden ' : ''}${!canEmbed ? '• Links einbetten ' : ''}`.trim()
+    });
+  }
+  if (!canManageChannels) {
+    return i.reply({
+      ephemeral: true,
+      content: '⛔ Mir fehlt **Kanäle verwalten** auf dem Server (für „📢 Info & Regeln“).'
+    });
+  }
+
+  if (!i.deferred && !i.replied) await i.deferReply({ ephemeral: true });
+  await createInfoAndButtons(i.guild, target);
+  return i.editReply(`✅ Setup aktualisiert in ${target}.`);
+}
 
     if (i.commandName === 'create_rep_roles') {
       if (!i.memberPermissions.has(PermissionsBitField.Flags.Administrator)) {
