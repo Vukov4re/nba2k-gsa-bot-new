@@ -1,33 +1,35 @@
+// index.js
 import 'dotenv/config';
 import {
   Client, GatewayIntentBits, Events,
   ChannelType, PermissionFlagsBits,
   ActionRowBuilder, ButtonBuilder, ButtonStyle,
-  EmbedBuilder, PermissionsBitField,
-  REST, Routes, SlashCommandBuilder
+  EmbedBuilder, PermissionsBitField
 } from 'discord.js';
 
-import { BASE_ROLES, BUTTON_LABELS, REP, VERIFY_TEXT } from './config/roles.js';
+import { BASE_ROLES, BUTTON_LABELS, REP, VERIFY_TEXT, MEDIA_TEXT } from './config/roles.js';
 
-// Token
+// ================= Onboarding-Reminder Einstellungen =================
+const REMIND_FIRST_MIN = 30;     // 30 Minuten nach Beitritt
+const REMIND_REPEAT_HOURS = 24;  // danach alle 24 Stunden erneut
+const ROLE_ACCESS_NAME = 'Mitglied';
+const ROLE_BLOCK_NAME  = 'Ohne Rolle';
+
+// ================== Client ==================
 const TOKEN = (process.env.DISCORD_TOKEN || process.env.TOKEN || '').trim();
 const TEMPLATE_ROLE = process.env.TEMPLATE_ROLE || 'REP-Vorlage';
-
-if (!TOKEN) {
-  console.error('❌ Missing DISCORD_TOKEN/TOKEN');
-  process.exit(1);
-}
+if (!TOKEN) { console.error('❌ Missing DISCORD_TOKEN/TOKEN'); process.exit(1); }
 
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent
+    GatewayIntentBits.GuildMembers,   // Privileged → im Dev-Portal aktivieren
+    GatewayIntentBits.GuildMessages,  // für Auto-Replies/Moderation
+    GatewayIntentBits.MessageContent  // Privileged → im Dev-Portal aktivieren
   ],
 });
 
-/* ---------- Helpers ---------- */
+// ================= Helpers: Roles/Channels/Messages =================
 async function ensureRole(guild, name) {
   let role = guild.roles.cache.find(r => r.name === name);
   if (!role) role = await guild.roles.create({ name });
@@ -46,30 +48,35 @@ async function ensureTextInCategory(guild, name, parent) {
 }
 async function lockReadOnly(channel, guild, me) {
   try {
-    const canManage = me.permissionsIn(channel).has(PermissionFlagsBitField.Flags.ManageChannels);
+    const canManage = me.permissionsIn(channel).has(PermissionFlagsBits.ManageChannels);
     if (!canManage) return;
     await channel.permissionOverwrites.edit(guild.roles.everyone, { SendMessages: false, AddReactions: false });
   } catch {}
 }
+
+/** Upsert: pin + Marker, sucht Pins + letzte 100 Nachrichten, keine Duplikate */
 async function upsertBotMessage(channel, { content, embeds, components, marker }) {
   const pins = await channel.messages.fetchPinned().catch(() => null);
   const inPins = pins?.find(m => m.author?.id === channel.client.user.id && (m.content?.includes(marker) || m.embeds?.[0]?.footer?.text?.includes?.(marker)));
+
   let existing = inPins;
   if (!existing) {
     const fetched = await channel.messages.fetch({ limit: 100 }).catch(() => null);
     existing = fetched?.find(m => m.author?.id === channel.client.user.id && m.content?.includes(marker));
   }
+
   const payload = {};
   if (content) payload.content = `${content}\n\n${marker}`;
   if (embeds) payload.embeds = embeds;
   if (components) payload.components = components;
+
   if (existing) return existing.edit(payload);
   const msg = await channel.send(payload);
   try { await msg.pin(); } catch {}
   return msg;
 }
 
-/* ---------- Embeds ---------- */
+// ================= Embeds/Texte =================
 function buildRulesEmbed() {
   return new EmbedBuilder()
     .setColor(0xDC143C)
@@ -102,91 +109,40 @@ function buildAnnouncementsText() {
   ].join('\n');
 }
 
-/* ---------- Setup-Funktionen ---------- */
-async function createInfoAndButtons(guild) {
-  const me = await guild.members.fetchMe();
-  const infoCat = await ensureCategory(guild, BASE_ROLES.categoryInfo);
-  const chRules = await ensureTextInCategory(guild, BASE_ROLES.channelRules, infoCat);
-  const chNews  = await ensureTextInCategory(guild, BASE_ROLES.channelNews,  infoCat);
-  const chRoles = await ensureTextInCategory(guild, BASE_ROLES.channelRoles, infoCat);
-  const chVerify= await ensureTextInCategory(guild, BASE_ROLES.channelVerify,infoCat);
-
-  await lockReadOnly(chRules, guild, me);
-  await lockReadOnly(chNews,  guild, me);
-
-  await upsertBotMessage(chRules, { embeds: [buildRulesEmbed()], marker: '[[BOT_RULES_V1]]' });
-  await upsertBotMessage(chNews,  { content: buildAnnouncementsText(),  marker: '[[BOT_NEWS_V1]]' });
-
-  // Rollen sicherstellen
-  await ensureRole(guild, BASE_ROLES.accessRole);
-  for (const r of [...BASE_ROLES.platforms, ...BASE_ROLES.countries, ...BASE_ROLES.positions, ...BASE_ROLES.styles]) {
-    await ensureRole(guild, r);
-  }
-
-  // Buttons in Rollen-Kanal
-  await postRoleMessage(chRoles);
-
-  // Verifizierungs-Hinweis
-  await upsertBotMessage(chVerify, { content: VERIFY_TEXT, marker: '[[BOT_REP_VERIFY_INFO_V1]]' });
-
-  return { chRoles, chVerify };
-}
-
-async function setupRepOnly(guild) {
-  const infoCat = await ensureCategory(guild, BASE_ROLES.categoryInfo);
-  const chVerify= await ensureTextInCategory(guild, BASE_ROLES.channelVerify, infoCat);
-  await upsertBotMessage(chVerify, { content: VERIFY_TEXT, marker: '[[BOT_REP_VERIFY_INFO_V1]]' });
-  return chVerify;
-}
-
-/* ---------- Buttons ---------- */
-function buildButtonsRow(items, prefix) {
-  const row = new ActionRowBuilder();
-  for (const { id, label, emoji } of items) {
-    row.addComponents(
-      new ButtonBuilder().setCustomId(`${prefix}:${id}`).setLabel(label).setStyle(ButtonStyle.Secondary).setEmoji(emoji)
-    );
-  }
-  return row;
-}
+// ================= Setup-Funktionen =================
 async function postRoleMessage(channel) {
-  // Plattform
+  // Plattformen
   await upsertBotMessage(channel, {
     content: '**Plattform wählen:**',
-    components: [buildButtonsRow(
-      [
-        { id: 'ps5',  label: BUTTON_LABELS.platforms[0] || 'PS5',  emoji: '🎮' },
-        { id: 'xbox', label: BUTTON_LABELS.platforms[1] || 'Xbox', emoji: '🎮' },
-        { id: 'pc',   label: BUTTON_LABELS.platforms[2] || 'PC',   emoji: '💻'  },
-      ],
-      'platform'
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('platform:ps5').setLabel(BUTTON_LABELS.platforms[0] || 'PS5').setStyle(ButtonStyle.Secondary).setEmoji('🎮'),
+      new ButtonBuilder().setCustomId('platform:xbox').setLabel(BUTTON_LABELS.platforms[1] || 'Xbox').setStyle(ButtonStyle.Secondary).setEmoji('🎮'),
+      new ButtonBuilder().setCustomId('platform:pc').setLabel(BUTTON_LABELS.platforms[2] || 'PC').setStyle(ButtonStyle.Secondary).setEmoji('💻'),
     )],
     marker: '[[BOT_ROLES_PLATFORM_V1]]'
   });
 
-  // Position
+  // Positionen
+  const posRow = new ActionRowBuilder();
+  (BUTTON_LABELS.positions || BASE_ROLES.positions).forEach((p, idx) => {
+    const id = (BASE_ROLES.positions[idx] || p).toLowerCase();
+    posRow.addComponents(new ButtonBuilder().setCustomId(`position:${id}`).setLabel(p).setStyle(ButtonStyle.Secondary).setEmoji('🏀'));
+  });
   await upsertBotMessage(channel, {
     content: '**Build-Position wählen:**',
-    components: [buildButtonsRow(
-      (BUTTON_LABELS.positions || BASE_ROLES.positions).map((p, idx) => ({
-        id: (BASE_ROLES.positions[idx] || p).toLowerCase(),
-        label: p, emoji: '🏀'
-      })),
-      'position'
-    )],
+    components: [posRow],
     marker: '[[BOT_ROLES_POSITION_V1]]'
   });
 
-  // Style
+  // Styles
+  const styleRow = new ActionRowBuilder();
+  (BUTTON_LABELS.styles || BASE_ROLES.styles).forEach((s, idx) => {
+    const id = (BASE_ROLES.styles[idx] || s).toLowerCase().replace(/[^\w]/g,'');
+    styleRow.addComponents(new ButtonBuilder().setCustomId(`style:${id}`).setLabel(s).setStyle(ButtonStyle.Secondary).setEmoji('🧩'));
+  });
   await upsertBotMessage(channel, {
     content: '**Spielstil/Modus wählen:**',
-    components: [buildButtonsRow(
-      (BUTTON_LABELS.styles || BASE_ROLES.styles).map((s, idx) => ({
-        id: (BASE_ROLES.styles[idx] || s).toLowerCase().replace(/[^\w]/g,''),
-        label: s, emoji: '🧩'
-      })),
-      'style'
-    )],
+    components: [styleRow],
     marker: '[[BOT_ROLES_STYLE_V1]]'
   });
 
@@ -204,7 +160,65 @@ async function postRoleMessage(channel) {
   });
 }
 
-/* ---------- Mapping Buttons → Rollennamen aus Config ---------- */
+async function createInfoAndButtons(guild) {
+  const me = await guild.members.fetchMe();
+  const infoCat = await ensureCategory(guild, BASE_ROLES.categoryInfo);
+  const chRules  = await ensureTextInCategory(guild, BASE_ROLES.channelRules, infoCat);
+  const chNews   = await ensureTextInCategory(guild, BASE_ROLES.channelNews,  infoCat);
+  const chRoles  = await ensureTextInCategory(guild, BASE_ROLES.channelRoles, infoCat);
+  const chVerify = await ensureTextInCategory(guild, BASE_ROLES.channelVerify,infoCat);
+
+  await lockReadOnly(chRules, guild, me);
+  await lockReadOnly(chNews,  guild, me);
+
+  await upsertBotMessage(chRules, { embeds: [buildRulesEmbed()], marker: '[[BOT_RULES_V1]]' });
+  await upsertBotMessage(chNews,  { content: buildAnnouncementsText(), marker: '[[BOT_NEWS_V1]]' });
+
+  await ensureRole(guild, ROLE_ACCESS_NAME);
+  await ensureRole(guild, ROLE_BLOCK_NAME);
+  for (const r of [...BASE_ROLES.platforms, ...BASE_ROLES.countries, ...BASE_ROLES.positions, ...BASE_ROLES.styles]) {
+    await ensureRole(guild, r);
+  }
+
+  await postRoleMessage(chRoles);
+
+  await upsertBotMessage(chVerify, { content: VERIFY_TEXT, marker: '[[BOT_REP_VERIFY_INFO_V1]]' });
+
+  return { chRoles, chVerify };
+}
+
+// Media (Clips/VOD/Fotos)
+async function setupMediaOnly(guild) {
+  const me = await guild.members.fetchMe();
+  if (!me.permissions.has(PermissionFlagsBits.ManageChannels)) throw new Error('Mir fehlt Kanäle verwalten');
+
+  const cat = await ensureCategory(guild, BASE_ROLES.categoryMedia);
+  const chClips = await ensureTextInCategory(guild, BASE_ROLES.channelClips,  cat);
+  const chVods  = await ensureTextInCategory(guild, BASE_ROLES.channelVods,   cat);
+  const chFotos = await ensureTextInCategory(guild, BASE_ROLES.channelPhotos ?? '📷│fotos', cat);
+
+  try { await chClips.setRateLimitPerUser(BASE_ROLES.clipsSlowmodeSeconds ?? 60); } catch {}
+
+  // Attachments in VODs verbieten (nur Links)
+  try { await chVods.permissionOverwrites.edit(guild.roles.everyone, { AttachFiles: false }); } catch {}
+
+  await upsertBotMessage(chClips, { content: MEDIA_TEXT.clips, marker: '[[BOT_CLIPS_RULES_V1]]' });
+  await upsertBotMessage(chVods,  { content: MEDIA_TEXT.vods,  marker: '[[BOT_VODS_RULES_V1]]' });
+
+  // Fotos-Kanal – Hinweis (optional, falls du Text willst)
+  await upsertBotMessage(chFotos, {
+    content:
+      '📌 **Fotos (NBA 2K) – Hinweise**\n' +
+      '• Erlaubt: Gameplay-/Stat-/Build-Screens, Setups\n' +
+      '• Keine Videos (→ #clips / #full-matches)\n' +
+      '• Bitte Modus • Plattform • Build • REP dazuschreiben',
+    marker: '[[BOT_PHOTOS_RULES_V1]]'
+  });
+
+  return { chClips, chVods, chFotos };
+}
+
+// ================= Mapping Buttons → Rollennamen =================
 function mapCustomIdToRoleName(customId) {
   const [prefix, raw] = customId.split(':');
 
@@ -212,20 +226,16 @@ function mapCustomIdToRoleName(customId) {
     const map = { ps5: BASE_ROLES.platforms[0], xbox: BASE_ROLES.platforms[1], pc: BASE_ROLES.platforms[2] };
     return map[raw];
   }
-
   if (prefix === 'position') {
-    // raw = 'pg' | 'sg' | ...
     const idx = ['pg','sg','sf','pf','c'].indexOf(raw.toLowerCase());
     return BASE_ROLES.positions[idx] || BUTTON_LABELS.positions[idx];
   }
-
   if (prefix === 'style') {
     const norm = raw.toLowerCase();
     const base = BASE_ROLES.styles.map(s => s.toLowerCase().replace(/[^\w]/g,''));
     const idx = base.indexOf(norm);
     return BASE_ROLES.styles[idx] || BUTTON_LABELS.styles[idx];
   }
-
   if (prefix === 'country') {
     if (raw === 'de') return BASE_ROLES.countries[0];
     if (raw === 'ch') return BASE_ROLES.countries[1];
@@ -234,26 +244,23 @@ function mapCustomIdToRoleName(customId) {
   return null;
 }
 
-/* ---------- REP Helpers ---------- */
+// ================= REP Helpers =================
 const RANK_KEYS = Object.keys(REP.display);
 const LEVELS = REP.levels;
 
 const normRank = (t) => t.trim().toLowerCase().replaceAll('all star','all-star').replaceAll('allstar','all-star');
 
 const findRoleByRankLevel = (guild, rankKey, level) => {
-  // akzeptiere beide Schreibweisen im Server (mit/ohne Emoji, mit/ohne Bindestrich)
-  const expected = REP.makeRoleName(rankKey, level);
+  const expected  = REP.makeRoleName(rankKey, level);
   const display   = `${REP.display[rankKey]} ${level}`;
   const displaySp = `${REP.display[rankKey].replace('-', ' ')} ${level}`;
-  return guild.roles.cache.find(r =>
-    r.name === expected || r.name.endsWith(display) || r.name.endsWith(displaySp)
-  ) || null;
+  return guild.roles.cache.find(r => r.name === expected || r.name.endsWith(display) || r.name.endsWith(displaySp)) || null;
 };
 
 const isRepRoleName = (name) =>
   RANK_KEYS.some(rk =>
     LEVELS.some(lv => {
-      const expected = REP.makeRoleName(rk, lv);
+      const expected  = REP.makeRoleName(rk, lv);
       const display   = `${REP.display[rk]} ${lv}`;
       const displaySp = `${REP.display[rk].replace('-', ' ')} ${lv}`;
       return name === expected || name.endsWith(display) || name.endsWith(displaySp);
@@ -265,63 +272,82 @@ const removeAllRepRoles = async (member) => {
   if (toRemove.size) await member.roles.remove([...toRemove.values()], 'REP update (only one active REP role)');
 };
 
-/* ---------- Events ---------- */
+// ================= Onboarding Reminder =================
+async function scheduleReminderLoop(guild, userId, first = false) {
+  try {
+    const member = await guild.members.fetch(userId).catch(() => null);
+    if (!member) return;
+
+    const isMember = member.roles.cache.some(r => r.name === ROLE_ACCESS_NAME);
+    if (isMember) return;
+
+    const roleChannel = guild.channels.cache.find(
+      ch => ch.type === ChannelType.GuildText && ch.name.includes('rolle-zuweisen')
+    );
+    const text = first
+      ? `👋 Willkommen auf **${guild.name}**! Bitte wähle dein **Land** in ${roleChannel ?? '#rolle-zuweisen'}, um alle Kanäle freizuschalten.`
+      : `⏰ Erinnerung: Wähle bitte dein **Land** in ${roleChannel ?? '#rolle-zuweisen'}, damit du die Rolle **${ROLE_ACCESS_NAME}** erhältst und alles siehst.`;
+
+    await member.send(text).catch(() => {});
+
+    setTimeout(() => scheduleReminderLoop(guild, userId, false), REMIND_REPEAT_HOURS * 60 * 60 * 1000);
+  } catch (e) {
+    console.error('reminder loop error:', e);
+  }
+}
+
+// ================= Events =================
 client.once('ready', () => {
   console.log(`✅ Eingeloggt als ${client.user.tag}`);
   client.user.setPresence({ activities: [{ name: 'NBA 2K DACH • /setup2k' }], status: 'online' });
 });
 
-// Slash Commands
+// Slash-Commands
 client.on(Events.InteractionCreate, async (i) => {
   try {
     if (!i.isChatInputCommand()) return;
 
+    // /setup2k – komplette Struktur + Rollenbuttons + Rep-Hinweis
     if (i.commandName === 'setup2k') {
       if (!i.memberPermissions.has(PermissionsBitField.Flags.Administrator))
         return i.reply({ content: '⛔ Nur Admins dürfen /setup2k ausführen.', ephemeral: true });
-      if (!i.guild.members.me.permissions.has(PermissionFlagsBitField.Flags.ManageChannels))
+      if (!i.guild.members.me.permissions.has(PermissionFlagsBits.ManageChannels))
         return i.reply({ content: '⛔ Mir fehlt **Kanäle verwalten**.', ephemeral: true });
 
       if (!i.deferred && !i.replied) await i.deferReply({ ephemeral: true });
       const { chRoles, chVerify } = await createInfoAndButtons(i.guild);
+      // optional Media gleich mit einrichten:
+      try { await setupMediaOnly(i.guild); } catch {}
       return i.editReply(`✅ Setup aktualisiert.\n• Rollen-Buttons in ${chRoles}\n• Verifizierung in ${chVerify}`);
     }
 
-    // im ChatInputCommand-Handler:
-if (i.commandName === 'setuprep') {
-  try {
-    // nur Admins
-    if (!i.memberPermissions.has(PermissionsBitField.Flags.Administrator)) {
-      return i.reply({ content: '⛔ Nur Admins dürfen /setuprep ausführen.', ephemeral: true });
+    // /setuprep – nur Rep-Verifizierungskanal
+    if (i.commandName === 'setuprep') {
+      if (!i.memberPermissions.has(PermissionsBitField.Flags.Administrator))
+        return i.reply({ content: '⛔ Nur Admins dürfen /setuprep ausführen.', ephemeral: true });
+      if (!i.guild.members.me.permissions.has(PermissionFlagsBits.ManageChannels))
+        return i.reply({ content: '⛔ Mir fehlt **Kanäle verwalten**.', ephemeral: true });
+
+      if (!i.deferred && !i.replied) await i.deferReply({ ephemeral: true });
+      const infoCat  = await ensureCategory(i.guild, BASE_ROLES.categoryInfo);
+      const chVerify = await ensureTextInCategory(i.guild, BASE_ROLES.channelVerify, infoCat);
+      await upsertBotMessage(chVerify, { content: VERIFY_TEXT, marker: '[[BOT_REP_VERIFY_INFO_V1]]' });
+      return i.editReply(`✅ REP-Verifizierungskanal eingerichtet: ${chVerify}`);
     }
 
-    const me = i.guild.members.me;
-    // Bot braucht "Kanäle verwalten"
-    if (!me.permissions.has(PermissionFlagsBits.ManageChannels)) {
-      return i.reply({ content: '⛔ Mir fehlt **Kanäle verwalten**.', ephemeral: true });
+    // /setupmedia – Clips/VODs/Fotos
+    if (i.commandName === 'setupmedia') {
+      if (!i.memberPermissions.has(PermissionsBitField.Flags.Administrator))
+        return i.reply({ content: '⛔ Nur Admins dürfen /setupmedia ausführen.', ephemeral: true });
+      if (!i.guild.members.me.permissions.has(PermissionFlagsBits.ManageChannels))
+        return i.reply({ content: '⛔ Mir fehlt **Kanäle verwalten**.', ephemeral: true });
+
+      if (!i.deferred && !i.replied) await i.deferReply({ ephemeral: true });
+      const { chClips, chVods, chFotos } = await setupMediaOnly(i.guild);
+      return i.editReply(`✅ Media eingerichtet:\n• Clips: ${chClips}\n• Full-Matches: ${chVods}\n• Fotos: ${chFotos}`);
     }
 
-    await i.deferReply({ ephemeral: true });
-
-    // Kategorie + Kanal sicherstellen
-    const infoCat  = await ensureCategory(i.guild, BASE_ROLES.categoryInfo);
-    const chVerify = await ensureTextInCategory(i.guild, BASE_ROLES.channelVerify, infoCat);
-
-    // Hinweis-Post idempotent
-    await upsertBotMessage(chVerify, {
-      content: VERIFY_TEXT,
-      marker: '[[BOT_REP_VERIFY_INFO_V1]]'
-    });
-
-    return i.editReply(`✅ REP-Verifizierungskanal eingerichtet: ${chVerify}`);
-  } catch (e) {
-    console.error('/setuprep error:', e);
-    if (i.deferred) return i.editReply('❌ Fehler bei /setuprep (siehe Logs).');
-    return i.reply({ content: '❌ Fehler bei /setuprep (siehe Logs).', ephemeral: true });
-  }
-}
-
-
+    // /create_rep_roles – 30 REP-Rollen nach Vorlage
     if (i.commandName === 'create_rep_roles') {
       if (!i.memberPermissions.has(PermissionsBitField.Flags.Administrator))
         return i.reply({ content: '⛔ Dir fehlt **Administrator**.', ephemeral: true });
@@ -330,7 +356,7 @@ if (i.commandName === 'setuprep') {
       const template = guild.roles.cache.find(r => r.name === TEMPLATE_ROLE);
       if (!template) return i.reply({ content: `⚠️ Vorlage-Rolle **${TEMPLATE_ROLE}** nicht gefunden.`, ephemeral: true });
 
-      await i.deferReply({ ephemeral: true });
+      if (!i.deferred && !i.replied) await i.deferReply({ ephemeral: true });
       let created = 0;
       for (const rk of RANK_KEYS) {
         for (const lv of LEVELS) {
@@ -348,6 +374,7 @@ if (i.commandName === 'setuprep') {
       return i.editReply(`✅ REP-Rollen erstellt. Neu: **${created}**.`);
     }
 
+    // /rep – Rolle setzen
     if (i.commandName === 'rep') {
       if (!i.memberPermissions.has(PermissionsBitField.Flags.ManageRoles))
         return i.reply({ content: '⛔ Dir fehlt **Manage Roles**.', ephemeral: true });
@@ -365,12 +392,13 @@ if (i.commandName === 'setuprep') {
       if (i.guild.members.me.roles.highest.comparePositionTo(role) <= 0)
         return i.reply({ content: '❌ Meine Bot-Rolle steht **unter** der Zielrolle.', ephemeral: true });
 
-      await i.deferReply({ ephemeral: true });
+      if (!i.deferred && !i.replied) await i.deferReply({ ephemeral: true });
       await removeAllRepRoles(user);
       await user.roles.add(role, `Set REP to ${role.name}`);
       return i.editReply(`✅ ${user} ist jetzt **${role.name}**. (Andere REP-Rollen entfernt)`);
     }
 
+    // /repclear – alle REP-Rollen entfernen
     if (i.commandName === 'repclear') {
       if (!i.memberPermissions.has(PermissionsBitField.Flags.ManageRoles))
         return i.reply({ content: '⛔ Dir fehlt **Manage Roles**.', ephemeral: true });
@@ -387,10 +415,25 @@ if (i.commandName === 'setuprep') {
   }
 });
 
-// Button-Interaktionen (Roles)
+// Buttons (Rollen & Navigation)
 client.on(Events.InteractionCreate, async (i) => {
   try {
     if (!i.isButton()) return;
+    const [prefix] = i.customId.split(':');
+
+    if (prefix === 'goto') {
+      const [, target] = i.customId.split(':');
+      if (target === 'roles') {
+        const roleChannel = i.guild.channels.cache.find(ch => ch.type === ChannelType.GuildText && ch.name.includes('rolle-zuweisen'));
+        return i.reply({ content: roleChannel ? `➡ Bitte wähle hier: ${roleChannel}` : '❌ Rollen-Kanal nicht gefunden.', flags: 64 });
+      }
+      if (target === 'repverify') {
+        const repChannel = i.guild.channels.cache.find(ch => ch.type === ChannelType.GuildText && ch.name.toLowerCase().includes('rep-verifiz'));
+        return i.reply({ content: repChannel ? `➡ Hier geht’s zur **REP-Verifizierung**: ${repChannel}` : '❌ Verifizierungskanal nicht gefunden.', flags: 64 });
+      }
+      return;
+    }
+
     const roleName = mapCustomIdToRoleName(i.customId);
     if (!roleName) return i.reply({ content: 'Unbekannter Button.', flags: 64 });
 
@@ -399,17 +442,27 @@ client.on(Events.InteractionCreate, async (i) => {
 
     const member = i.member;
     const hasRole = member.roles.cache.has(role.id);
+
     if (hasRole) {
       await member.roles.remove(role);
       return i.reply({ content: `❎ Rolle **${roleName}** entfernt.`, flags: 64 });
     }
+
     await member.roles.add(role);
 
-    if (i.customId.startsWith('country:')) {
-      const access = await ensureRole(i.guild, BASE_ROLES.accessRole);
+    if (prefix === 'country') {
+      const access = await ensureRole(i.guild, ROLE_ACCESS_NAME);
       await member.roles.add(access).catch(() => {});
-      return i.reply({ content: `✅ **${roleName}** gesetzt. Du bist freigeschaltet!`, flags: 64 });
+      const block = i.guild.roles.cache.find(r => r.name.toLowerCase().includes('ohne') && r.name.toLowerCase().includes('rolle'));
+      if (block) await member.roles.remove(block).catch(() => {});
+
+      // Button zur Verifizierung
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('goto:repverify').setLabel('➡ Zur REP-Verifizierung').setStyle(ButtonStyle.Primary)
+      );
+      return i.reply({ content: `✅ **${roleName}** gesetzt. Du bist freigeschaltet!\nHol dir jetzt deinen **REP-Rang** über den Button unten.`, components: [row], flags: 64 });
     }
+
     return i.reply({ content: `✅ Rolle **${roleName}** hinzugefügt.`, flags: 64 });
   } catch (err) {
     console.error('interaction (button) error:', err);
@@ -417,26 +470,99 @@ client.on(Events.InteractionCreate, async (i) => {
   }
 });
 
-/* ---------- Auto-Reply im Verifizierungskanal ---------- */
+// Auto-Reply im Verifizierungskanal (Screenshot erkannt)
 client.on(Events.MessageCreate, async (msg) => {
   try {
     if (msg.author.bot) return;
     if (msg.channel.type !== ChannelType.GuildText) return;
+
     const name = msg.channel.name.toLowerCase();
-    const verifyName = BASE_ROLES.channelVerify.toLowerCase().replace(/[^\w]/g,'');
-    if (!name.replace(/[^\w]/g,'').includes(verifyName)) return;
+    if (!(name.includes('rep-verifiz'))) return;
 
     const hasAttachment = msg.attachments?.size > 0;
     const hasImageUrl = /(https?:\/\/\S+\.(png|jpe?g|gif|webp))/i.test(msg.content || '');
     if (!hasAttachment && !hasImageUrl) return;
 
-    await msg.reply('✅ **Screenshot erhalten!** Ein Mod prüft deinen REP und setzt dir die passende Rolle.\n' +
-      'ℹ️ Mods: `/rep user:@Name rank:<Rookie|Pro|All-Star|Superstar|Elite|Legend> level:<1–5>`'
+    await msg.reply(
+      '✅ **Screenshot erhalten!** Ein Mod prüft deinen REP und setzt dir die passende Rolle.\n' +
+      'ℹ️ Mods: `/rep user:@Name rank:<Rookie|Starter|All-Star (Reserve)|Superstar (Reserve)|Veteran|Legend> level:<1–5>`'
     ).catch(() => {});
   } catch (e) {
     console.error('verify auto-reply error:', e);
   }
 });
 
-client.once('ready', () => console.log('✅ Bot bereit'));
+// VOD-Kanal: Dateiuploads abräumen (nur Links)
+client.on(Events.MessageCreate, async (msg) => {
+  try {
+    if (msg.author.bot) return;
+    if (msg.channel.type !== ChannelType.GuildText) return;
+
+    const vodName = BASE_ROLES.channelVods.toLowerCase().replace(/[^\w]/g,'');
+    const chanMatch = msg.channel.name.toLowerCase().replace(/[^\w]/g,'').includes(vodName);
+    if (!chanMatch) return;
+
+    if (msg.attachments?.size > 0) {
+      await msg.delete().catch(() => {});
+      const warn = await msg.channel.send(`${msg.member}, bitte **nur Links** posten – Datei-Uploads sind in ${msg.channel} deaktiviert.`).catch(() => null);
+      if (warn) setTimeout(() => warn.delete().catch(() => {}), 10000);
+    }
+  } catch (e) {
+    console.error('vod auto-mod error:', e);
+  }
+});
+
+// Fotos-Kanal: nur Bilder (optional, falls channelPhotos gesetzt)
+client.on(Events.MessageCreate, async (msg) => {
+  try {
+    if (msg.author.bot) return;
+    if (msg.channel.type !== ChannelType.GuildText) return;
+
+    const photosConf = (BASE_ROLES.channelPhotos || '📷│fotos');
+    const photosName = photosConf.toLowerCase().replace(/[^\w]/g,'');
+    const chanOk = msg.channel.name.toLowerCase().replace(/[^\w]/g,'').includes(photosName);
+    if (!chanOk) return;
+
+    const hasImgAttach = [...msg.attachments.values()].some(a => (a.contentType || '').startsWith('image/'));
+    const hasImgLink = /(https?:\/\/\S+\.(png|jpe?g|gif|webp))/i.test(msg.content || '');
+    const hasNonImageAttach = msg.attachments.size > 0 && !hasImgAttach;
+
+    if (hasNonImageAttach || (!hasImgAttach && !hasImgLink)) {
+      await msg.delete().catch(() => {});
+      const warn = await msg.channel.send(
+        `${msg.member}, **nur NBA 2K-Bilder/Screenshots** sind in ${msg.channel} erlaubt. ` +
+        `Für Videos nutze bitte **#${BASE_ROLES.channelClips}** oder **#${BASE_ROLES.channelVods}**.`
+      ).catch(() => null);
+      if (warn) setTimeout(() => warn.delete().catch(() => {}), 10000);
+    }
+  } catch (e) {
+    console.error('photos auto-mod error:', e);
+  }
+});
+
+// Onboarding – „Ohne Rolle“, Willkommenshinweis und Reminder-Loop
+client.on(Events.GuildMemberAdd, async (member) => {
+  try {
+    const guild = member.guild;
+
+    const noRole = await ensureRole(guild, ROLE_BLOCK_NAME);
+    await member.roles.add(noRole).catch(() => {});
+
+    const welcome = guild.channels.cache.find(ch => ch.type === ChannelType.GuildText && ch.name.includes('willkommen'));
+    const roleChannel = guild.channels.cache.find(ch => ch.type === ChannelType.GuildText && ch.name.includes('rolle-zuweisen'));
+    if (welcome) {
+      await welcome.send({
+        content:
+          `👋 Willkommen ${member}!\n` +
+          `Bitte wähle dein **Land** in ${roleChannel ?? '#rolle-zuweisen'}, um freigeschaltet zu werden.`
+      }).catch(() => {});
+    }
+
+    setTimeout(() => scheduleReminderLoop(guild, member.id, true), REMIND_FIRST_MIN * 60 * 1000);
+
+  } catch (err) {
+    console.error('guildMemberAdd error:', err);
+  }
+});
+
 client.login(TOKEN);
