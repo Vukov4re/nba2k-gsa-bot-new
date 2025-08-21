@@ -23,6 +23,9 @@ const commands = [
     .setName('setuprep')
     .setDescription('Richtet nur den REP-Verifizierungskanal ein (idempotent).'),
 
+  new SlashCommandBuilder().setName('setupmedia')
+  .setDescription('Richtet Clips- und Full-Matches-Kanäle ein (idempotent).'),
+
   new SlashCommandBuilder()
     .setName('create_rep_roles')
     .setDescription('Erstellt alle REP-Rollen (Rookie 1–5 … Legend 1–5) nach Vorlage.'),
