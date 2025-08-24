@@ -327,10 +327,48 @@ async function sendWelcomeWithButton(member) {
   }).catch(() => {});
 }
 
+// ================= Countdown: einmalig in #ankündigungen posten =================
+async function postReleaseCountdown(guild) {
+  const releaseTimestamp = 1756490400; // 29.08.2025 18:00 MESZ
+  const channel = guild.channels.cache.find(
+    ch => ch.type === ChannelType.GuildText && ch.name.includes('ankündigungen')
+  );
+  if (!channel) return;
+
+  // ✅ Marker gegen Doppelposts
+  const recent = await channel.messages.fetch({ limit: 20 }).catch(() => null);
+  const already = recent?.find(m =>
+    m.author?.id === guild.members.me.id &&
+    m.content?.includes('[[COUNTDOWN_2K26]]')
+  );
+  if (already) return;
+
+  const embed = new EmbedBuilder()
+    .setColor(0x1d428a) // NBA Blau
+    .setTitle('🏀 NBA2K26 Release Countdown')
+    .setDescription(
+      `📢 Offizieller Release: <t:${releaseTimestamp}:F>\n\n` +
+      `⏳ **Countdown:** <t:${releaseTimestamp}:R>\n\n` +
+      `🔥 Macht euch bereit für das nächste Kapitel in NBA2K!`
+    )
+    .setFooter({ text: 'NBA2K DACH Community' })
+    .setThumbnail('https://upload.wikimedia.org/wikipedia/en/6/6f/NBA_2K_series_logo.png');
+
+  await channel.send({
+    content: '[[COUNTDOWN_2K26]]',
+    embeds: [embed]
+  }).catch(() => {});
+}
+
 // ================= Events =================
-client.once('ready', () => {
+client.once('ready', async () => {
   console.log(`✅ Eingeloggt als ${client.user.tag}`);
   client.user.setPresence({ activities: [{ name: 'NBA 2K DACH • /setup2k' }], status: 'online' });
+
+  // Countdown automatisch in Ankündigungen posten (einmalig)
+  for (const [, guild] of client.guilds.cache) {
+    await postReleaseCountdown(guild);
+  }
 });
 
 // Slash-Commands
@@ -365,7 +403,7 @@ client.on(Events.InteractionCreate, async (i) => {
       return i.editReply(`✅ REP-Verifizierungskanal eingerichtet: ${chVerify}`);
     }
 
-    // /setupmedia – Clips/VOD/Fotos
+    // /setupmedia – Clips/VODs/Fotos
     if (i.commandName === 'setupmedia') {
       if (!i.memberPermissions.has(PermissionsBitField.Flags.Administrator))
         return i.reply({ content: '⛔ Nur Admins dürfen /setupmedia ausführen.', ephemeral: true });
@@ -479,7 +517,8 @@ client.on(Events.InteractionCreate, async (i) => {
 
     await member.roles.add(role);
 
-    if (prefix === 'country') {
+    const [btnPrefix] = i.customId.split(':');
+    if (btnPrefix === 'country') {
       const access = await ensureRole(i.guild, ROLE_ACCESS_NAME);
       await member.roles.add(access).catch(() => {});
       const block = i.guild.roles.cache.find(r => r.name.toLowerCase().includes('ohne') && r.name.toLowerCase().includes('rolle'));
