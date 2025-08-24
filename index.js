@@ -329,7 +329,7 @@ async function sendWelcomeWithButton(member) {
 
 // ================= Countdown: einmalig in #ankündigungen posten =================
 async function postReleaseCountdown(guild) {
-  const releaseTimestamp = 1756490400; // 29.08.2025 18:00 MESZ
+  const releaseTimestamp = 1756490400; // 29.08.2025 16:00 MESZ
   const channel = guild.channels.cache.find(
     ch => ch.type === ChannelType.GuildText && ch.name.includes('ankündigungen')
   );
