@@ -42,8 +42,6 @@ commands.push(
 );
 
 // LFG (Squad-Suche)
-commands.push(new SlashCommandBuilder().setName('setuplfg').setDescription('Erstellt/prüft den 🔎│squad-suche Kanal (idempotent).'));
-
 commands.push(
   new SlashCommandBuilder()
     .setName('lfg')
@@ -65,6 +63,25 @@ commands.push(
           { name: 'PC', value: 'PC' },
         )
     )
+    // ✅ Crossplay PS5/Xbox
+    .addBooleanOption(o =>
+      o.setName('crossplay')
+        .setDescription('Crossplay PS5/Xbox erlauben?')
+        .setRequired(false)
+    )
+    // ✅ Squad-Name aus dem 50er-Pool (mit Autocomplete)
+    .addStringOption(o =>
+      o.setName('squad_name')
+        .setDescription('Wunschname (z. B. "Squad Mamba")')
+        .setRequired(false)
+        .setAutocomplete(true)
+    )
+    .addStringOption(o => o.setName('positionen').setDescription('z. B. „PG, C“').setRequired(true))
+    .addIntegerOption(o => o.setName('slots').setDescription('Mitspieler (1–5)').setRequired(true).setMinValue(1).setMaxValue(5))
+    .addStringOption(o => o.setName('notiz').setDescription('Badges/REP/Region (optional)').setRequired(false))
+    .addIntegerOption(o => o.setName('ttl_minutes').setDescription('Ablaufzeit in Minuten (Standard 120)').setMinValue(15).setMaxValue(1440).setRequired(false))
+);
+
     // 🔹 NEU: Crossplay (PS5/Xbox)
     .addBooleanOption(o =>
       o.setName('crossplay')
