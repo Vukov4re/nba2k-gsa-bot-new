@@ -12,6 +12,7 @@ commands.push(
   new SlashCommandBuilder()
     .setName('lfg')
     .setDescription('Erstellt eine Squad-Suche mit Buttons.')
+    // --- Required Felder zuerst ---
     .addStringOption(o =>
       o.setName('modus').setDescription('Park / Rec / Pro-Am / MyTeam').setRequired(true)
         .addChoices(
@@ -29,22 +30,31 @@ commands.push(
           { name: 'PC', value: 'PC' },
         )
     )
+    .addStringOption(o =>
+      o.setName('positionen').setDescription('z. B. „PG, C“').setRequired(true)
+    )
+    .addIntegerOption(o =>
+      o.setName('slots').setDescription('Mitspieler (1–5)').setRequired(true)
+        .setMinValue(1).setMaxValue(5)
+    )
+
+    // --- Danach optionale Felder ---
     .addBooleanOption(o =>
-      o.setName('crossplay')
-        .setDescription('Crossplay PS5/Xbox erlauben?')
-        .setRequired(false)
+      o.setName('crossplay').setDescription('Crossplay PS5/Xbox erlauben?').setRequired(false)
     )
     .addStringOption(o =>
-      o.setName('squad_name')
-        .setDescription('Wunschname (z. B. "Squad Mamba")')
-        .setRequired(false)
-        .setAutocomplete(true) // <— wichtig!
+      o.setName('squad_name').setDescription('Wunschname (z. B. "Squad Mamba")')
+        .setRequired(false).setAutocomplete(true)
     )
-    .addStringOption(o => o.setName('positionen').setDescription('z. B. „PG, C“').setRequired(true))
-    .addIntegerOption(o => o.setName('slots').setDescription('Mitspieler (1–5)').setRequired(true).setMinValue(1).setMaxValue(5))
-    .addStringOption(o => o.setName('notiz').setDescription('Badges/REP/Region (optional)').setRequired(false))
-    .addIntegerOption(o => o.setName('ttl_minutes').setDescription('Ablaufzeit in Minuten (Standard 120)').setMinValue(15).setMaxValue(1440).setRequired(false))
+    .addStringOption(o =>
+      o.setName('notiz').setDescription('Badges/REP/Region (optional)').setRequired(false)
+    )
+    .addIntegerOption(o =>
+      o.setName('ttl_minutes').setDescription('Ablaufzeit in Minuten (Standard 120)')
+        .setMinValue(15).setMaxValue(1440).setRequired(false)
+    )
 );
+
 
 // ----- Deploy-Logik -----
 const token   = process.env.DISCORD_TOKEN || process.env.TOKEN;
