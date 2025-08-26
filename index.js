@@ -1,479 +1,460 @@
-// index.js
 import 'dotenv/config';
 import {
   Client, GatewayIntentBits, Events,
-  ChannelType, PermissionFlagsBits,
-  ActionRowBuilder, ButtonBuilder, ButtonStyle,
-  EmbedBuilder, PermissionsBitField
+  ChannelType, PermissionFlagsBits, PermissionsBitField,
+  EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle
 } from 'discord.js';
 
-import { BASE_ROLES, BUTTON_LABELS, REP, VERIFY_TEXT, MEDIA_TEXT } from './config/roles.js';
+import {
+  LFG_CHANNEL_NAME,
+  LFG_VOICE_CATEGORY_NAME,
+  LFG_DEFAULT_TTL_MIN,
+  SQUAD_NAME_POOL
+} from './config/squads.js';
 
-// ================= Onboarding Einstellungen =================
-const REMIND_FIRST_MIN = 30;     // 30 Min nach Beitritt DM
-const REMIND_REPEAT_HOURS = 24;  // danach alle 24h DM
-const ROLE_ACCESS_NAME = 'Mitglied';
-const ROLE_BLOCK_NAME  = 'Ohne Rolle';
-const TEMPLATE_ROLE = process.env.TEMPLATE_ROLE || 'REP-Vorlage';
+import {
+  BASE_ROLES, BUTTON_LABELS, REP, VERIFY_TEXT
+} from './config/roles.js';
 
-// ================= Client =================
+/* ===================== Client ===================== */
 const TOKEN = (process.env.DISCORD_TOKEN || process.env.TOKEN || '').trim();
 if (!TOKEN) { console.error('❌ Missing DISCORD_TOKEN/TOKEN'); process.exit(1); }
 
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers,   // Privileged → im Dev-Portal aktivieren
+    GatewayIntentBits.GuildMembers,   // Privileged: im Dev-Portal aktivieren
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent  // Privileged → im Dev-Portal aktivieren
+    GatewayIntentBits.MessageContent  // Privileged: im Dev-Portal aktivieren
   ],
 });
 
-// ================= Helpers: Roles/Channels/Messages =================
-async function ensureRole(guild, name) {
-  let role = guild.roles.cache.find(r => r.name === name);
-  if (!role) role = await guild.roles.create({ name });
-  return role;
+/* ===================== Utils ===================== */
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+async function ensureTextChannel(guild, name, parentId=null) {
+  let ch = guild.channels.cache.find(c => c.type === ChannelType.GuildText && c.name === name);
+  if (!ch) ch = await guild.channels.create({ name, type: ChannelType.GuildText, parent: parentId || undefined });
+  return ch;
 }
 async function ensureCategory(guild, name) {
   let cat = guild.channels.cache.find(c => c.type === ChannelType.GuildCategory && c.name === name);
   if (!cat) cat = await guild.channels.create({ name, type: ChannelType.GuildCategory });
   return cat;
 }
-async function ensureTextInCategory(guild, name, parent) {
-  let ch = guild.channels.cache.find(c => c.type === ChannelType.GuildText && c.name === name);
-  if (!ch) ch = await guild.channels.create({ name, type: ChannelType.GuildText, parent: parent?.id });
-  else if (parent && ch.parentId !== parent.id) await ch.setParent(parent.id).catch(() => {});
-  return ch;
+async function findOrCreateRole(guild, name) {
+  let r = guild.roles.cache.find(x => x.name === name);
+  if (!r) r = await guild.roles.create({ name, mentionable: false });
+  return r;
 }
-async function lockReadOnly(channel, guild, me) {
+
+/* ===================== LFG Helpers ===================== */
+function readStateFromEmbed(msg) {
+  const footer = msg.embeds?.[0]?.footer?.text || '';
+  const m = footer.match(/\[\[LFG:(.+)\]\]/);
+  if (!m) return null;
+  try { return JSON.parse(m[1]); } catch { return null; }
+}
+function writeStateToEmbed(embed, state) {
+  embed.setFooter({ text: `[[LFG:${JSON.stringify(state)}]]` });
+  return embed;
+}
+async function ensureLfgChannel(guild) {
+  return ensureTextChannel(guild, LFG_CHANNEL_NAME);
+}
+async function ensureVoiceCategory(guild) {
+  return ensureCategory(guild, LFG_VOICE_CATEGORY_NAME);
+}
+function renderLfgEmbed({ name, author, mode, platform, crossplay, positions, slots, joinedIds }) {
+  const full = joinedIds.length >= slots;
+  const title = full
+    ? `🔒 [VOLL] ${name} – ${mode} (${platform}${crossplay ? ' • Crossplay' : ''})`
+    : `🔎 ${name} – ${mode} (${platform}${crossplay ? ' • Crossplay' : ''})`;
+
+  const desc = [
+    `**Gesucht:** ${positions}`,
+    `**Slots:** ${joinedIds.length}/${slots}`,
+    `👤 **Host:** <@${author}>`
+  ].join('\n');
+
+  const embed = new EmbedBuilder()
+    .setColor(full ? 0x888888 : 0x00A86B)
+    .setTitle(title)
+    .setDescription(desc)
+    .setTimestamp();
+
+  embed.addFields({
+    name: 'Teilnehmer',
+    value: joinedIds.length ? joinedIds.map(id => `• <@${id}>`).join('\n') : '— noch frei —'
+  });
+
+  return embed;
+}
+function buildLfgRow(messageId, locked) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`lfg:join:${messageId}`).setLabel('Beitreten').setStyle(ButtonStyle.Success).setDisabled(locked),
+    new ButtonBuilder().setCustomId(`lfg:leave:${messageId}`).setLabel('Verlassen').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`lfg:close:${messageId}`).setLabel('Squad auflösen').setStyle(ButtonStyle.Danger)
+  );
+}
+function isSquadNameTaken(guild, name) {
+  return !!guild.roles.cache.find(r => r.name === name);
+}
+function normSquadName(input) {
+  if (!input) return '';
+  const s = input.trim();
+  return s.toLowerCase().startsWith('squad ') ? s : `Squad ${s}`;
+}
+function isNameAllowed(name) {
+  return SQUAD_NAME_POOL.includes(name);
+}
+async function reserveSquadName(guild, name) {
+  return guild.roles.create({ name, hoist: false, mentionable: false, reason: 'LFG Squad' });
+}
+async function freeSquadResources(guild, state) {
   try {
-    if (!me.permissionsIn(channel).has(PermissionFlagsBits.ManageChannels)) return;
-    await channel.permissionOverwrites.edit(guild.roles.everyone, { SendMessages: false, AddReactions: false });
+    if (state.roleId) await guild.roles.delete(state.roleId).catch(() => {});
+    if (state.voiceId) {
+      const v = guild.channels.cache.get(state.voiceId);
+      if (v) await v.delete().catch(() => {});
+    }
   } catch {}
 }
+async function createPrivateVoiceIfFull(guild, state) {
+  if (state.voiceId) return state;
+  const cat = await ensureVoiceCategory(guild);
+  const role = guild.roles.cache.get(state.roleId);
+  if (!role) return state;
 
-/** Upsert: pin + Marker, sucht Pins + letzte 100 Nachrichten, keine Duplikate */
-async function upsertBotMessage(channel, { content, embeds, components, marker }) {
-  const pins = await channel.messages.fetchPinned().catch(() => null);
-  const inPins = pins?.find(m => m.author?.id === channel.client.user.id && (m.content?.includes(marker) || m.embeds?.[0]?.footer?.text?.includes?.(marker)));
-
-  let existing = inPins;
-  if (!existing) {
-    const fetched = await channel.messages.fetch({ limit: 100 }).catch(() => null);
-    existing = fetched?.find(m => m.author?.id === channel.client.user.id && m.content?.includes(marker));
-  }
-
-  const payload = {};
-  if (content) payload.content = `${content}\n\n${marker}`;
-  if (embeds) payload.embeds = embeds;
-  if (components) payload.components = components;
-
-  if (existing) return existing.edit(payload);
-  const msg = await channel.send(payload);
-  try { await msg.pin(); } catch {}
-  return msg;
-}
-
-// ================= Embeds/Texte =================
-function buildRulesEmbed() {
-  return new EmbedBuilder()
-    .setColor(0xDC143C)
-    .setTitle('📜 Regeln – NBA2K DACH Community')
-    .setDescription([
-      '**Bitte haltet euch an diese Punkte:**',
-      '1) **Respekt** – kein Toxic/Hate',
-      '2) **Kein Spam/Promo** – Werbung nur mit Staff-Okay',
-      '3) **Richtig posten** – passende Kanäle nutzen',
-      '4) **Inhalte** – kein NSFW/Illegal/Leaks',
-      '5) **Fairplay** – keine Cheats/Glitches',
-      '6) **Namen/Avatare** – nichts Anstößiges',
-      '7) **Mods/Admins** – Anweisungen befolgen',
-      '⚠️ Sanktionen: Hinweis → Verwarnung → Timeout → Kick/Ban'
-    ].join('\n'))
-    .setFooter({ text: '[[BOT_RULES_V1]]' })
-    .setTimestamp();
-}
-function buildAnnouncementsText() {
-  return [
-    'Willkommen im **#ankündigungen**-Kanal 📢',
-    'Updates der Community: Turniere, Bot-Änderungen, Events.',
-    'Klicke oben auf **„Folgen“**, um nichts zu verpassen.',
-    'Nur Team/Mods posten hier.'
-  ].join('\n');
-}
-
-// ================= Setup-Funktionen =================
-async function postRoleMessage(channel) {
-  // Plattformen
-  await upsertBotMessage(channel, {
-    content: '**Plattform wählen:**',
-    components: [new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('platform:ps5').setLabel(BUTTON_LABELS.platforms[0] || 'PS5').setStyle(ButtonStyle.Secondary).setEmoji('🎮'),
-      new ButtonBuilder().setCustomId('platform:xbox').setLabel(BUTTON_LABELS.platforms[1] || 'Xbox').setStyle(ButtonStyle.Secondary).setEmoji('🎮'),
-      new ButtonBuilder().setCustomId('platform:pc').setLabel(BUTTON_LABELS.platforms[2] || 'PC').setStyle(ButtonStyle.Secondary).setEmoji('💻'),
-    )],
-    marker: '[[BOT_ROLES_PLATFORM_V1]]'
+  const everyone = guild.roles.everyone;
+  const voice = await guild.channels.create({
+    name: state.name,
+    type: ChannelType.GuildVoice,
+    parent: cat.id,
+    userLimit: state.slots,
+    permissionOverwrites: [
+      { id: everyone, deny: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect] },
+      { id: role.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect, PermissionFlagsBits.Speak] }
+    ]
   });
 
-  // Positionen
-  const posRow = new ActionRowBuilder();
-  (BUTTON_LABELS.positions || BASE_ROLES.positions).forEach((p, idx) => {
-    const id = (BASE_ROLES.positions[idx] || p).toLowerCase();
-    posRow.addComponents(new ButtonBuilder().setCustomId(`position:${id}`).setLabel(p).setStyle(ButtonStyle.Secondary).setEmoji('🏀'));
-  });
-  await upsertBotMessage(channel, {
-    content: '**Build-Position wählen:**',
-    components: [posRow],
-    marker: '[[BOT_ROLES_POSITION_V1]]'
-  });
-
-  // Styles
-  const styleRow = new ActionRowBuilder();
-  (BUTTON_LABELS.styles || BASE_ROLES.styles).forEach((s, idx) => {
-    const id = (BASE_ROLES.styles[idx] || s).toLowerCase().replace(/[^\w]/g,'');
-    styleRow.addComponents(new ButtonBuilder().setCustomId(`style:${id}`).setLabel(s).setStyle(ButtonStyle.Secondary).setEmoji('🧩'));
-  });
-  await upsertBotMessage(channel, {
-    content: '**Spielstil/Modus wählen:**',
-    components: [styleRow],
-    marker: '[[BOT_ROLES_STYLE_V1]]'
-  });
-
-  // Länder (Pflicht)
-  const cs = (BUTTON_LABELS.countries || BASE_ROLES.countries);
-  const countryRow = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('country:de').setLabel(cs[0] || 'Deutschland').setStyle(ButtonStyle.Primary).setEmoji('🇩🇪'),
-    new ButtonBuilder().setCustomId('country:ch').setLabel(cs[1] || 'Schweiz').setStyle(ButtonStyle.Primary).setEmoji('🇨🇭'),
-    new ButtonBuilder().setCustomId('country:at').setLabel(cs[2] || 'Österreich').setStyle(ButtonStyle.Primary).setEmoji('🇦🇹'),
-  );
-  await upsertBotMessage(channel, {
-    content: '**Land wählen (Pflicht für Freischaltung):**',
-    components: [countryRow],
-    marker: '[[BOT_ROLES_COUNTRY_V1]]'
-  });
+  state.voiceId = voice.id;
+  return state;
 }
 
-async function createInfoAndButtons(guild) {
-  const me = await guild.members.fetchMe();
-  const infoCat = await ensureCategory(guild, BASE_ROLES.categoryInfo);
-  const chRules  = await ensureTextInCategory(guild, BASE_ROLES.channelRules, infoCat);
-  const chNews   = await ensureTextInCategory(guild, BASE_ROLES.channelNews,  infoCat);
-  const chRoles  = await ensureTextInCategory(guild, BASE_ROLES.channelRoles, infoCat);
-  const chVerify = await ensureTextInCategory(guild, BASE_ROLES.channelVerify,infoCat);
-
-  await lockReadOnly(chRules, guild, me);
-  await lockReadOnly(chNews,  guild, me);
-
-  await upsertBotMessage(chRules, { embeds: [buildRulesEmbed()], marker: '[[BOT_RULES_V1]]' });
-  await upsertBotMessage(chNews,  { content: buildAnnouncementsText(), marker: '[[BOT_NEWS_V1]]' });
-
-  await ensureRole(guild, ROLE_ACCESS_NAME);
-  await ensureRole(guild, ROLE_BLOCK_NAME);
-  for (const r of [...BASE_ROLES.platforms, ...BASE_ROLES.countries, ...BASE_ROLES.positions, ...BASE_ROLES.styles]) {
-    await ensureRole(guild, r);
-  }
-
-  await postRoleMessage(chRoles);
-
-  await upsertBotMessage(chVerify, { content: VERIFY_TEXT, marker: '[[BOT_REP_VERIFY_INFO_V1]]' });
-
-  return { chRoles, chVerify };
-}
-
-async function setupMediaOnly(guild) {
-  const me = await guild.members.fetchMe();
-  if (!me.permissions.has(PermissionFlagsBits.ManageChannels)) throw new Error('Mir fehlt Kanäle verwalten');
-
-  const cat = await ensureCategory(guild, BASE_ROLES.categoryMedia);
-  const chClips = await ensureTextInCategory(guild, BASE_ROLES.channelClips,  cat);
-  const chVods  = await ensureTextInCategory(guild, BASE_ROLES.channelVods,   cat);
-  const chFotos = await ensureTextInCategory(guild, BASE_ROLES.channelPhotos, cat);
-
-  try { await chClips.setRateLimitPerUser(BASE_ROLES.clipsSlowmodeSeconds ?? 60); } catch {}
-  try { await chVods.permissionOverwrites.edit(guild.roles.everyone, { AttachFiles: false }); } catch {}
-
-  await upsertBotMessage(chClips, { content: MEDIA_TEXT.clips, marker: '[[BOT_CLIPS_RULES_V1]]' });
-  await upsertBotMessage(chVods,  { content: MEDIA_TEXT.vods,  marker: '[[BOT_VODS_RULES_V1]]' });
-
-  await upsertBotMessage(chFotos, {
-    content:
-      '📌 **Fotos (NBA 2K)**\n' +
-      '• Erlaubt: Gameplay-/Stat-/Build-Screens, Setups\n' +
-      '• Keine Videos (→ #clips / #full-matches)\n' +
-      '• Bitte Modus • Plattform • Build • REP dazuschreiben',
-    marker: '[[BOT_PHOTOS_RULES_V1]]'
-  });
-
-  return { chClips, chVods, chFotos };
-}
-
-// ================= Mapping Buttons → Rollennamen =================
-function mapCustomIdToRoleName(customId) {
-  const [prefix, raw] = customId.split(':');
-
-  if (prefix === 'platform') {
-    const map = { ps5: BASE_ROLES.platforms[0], xbox: BASE_ROLES.platforms[1], pc: BASE_ROLES.platforms[2] };
-    return map[raw];
-  }
-  if (prefix === 'position') {
-    const idx = ['pg','sg','sf','pf','c'].indexOf(raw.toLowerCase());
-    return BASE_ROLES.positions[idx] || BUTTON_LABELS.positions[idx];
-  }
-  if (prefix === 'style') {
-    const norm = raw.toLowerCase();
-    const base = BASE_ROLES.styles.map(s => s.toLowerCase().replace(/[^\w]/g,''));
-    const idx = base.indexOf(norm);
-    return BASE_ROLES.styles[idx] || BUTTON_LABELS.styles[idx];
-  }
-  if (prefix === 'country') {
-    if (raw === 'de') return BASE_ROLES.countries[0];
-    if (raw === 'ch') return BASE_ROLES.countries[1];
-    if (raw === 'at') return BASE_ROLES.countries[2];
-  }
-  return null;
-}
-
-// ================= REP Helpers =================
-const RANK_KEYS = Object.keys(REP.display);
-const LEVELS = REP.levels;
-const normRank = (t) => t.trim().toLowerCase().replaceAll('all star','all-star').replaceAll('allstar','all-star');
-
-const findRoleByRankLevel = (guild, rankKey, level) => {
-  const expected  = REP.makeRoleName(rankKey, level);
-  const display   = `${REP.display[rankKey]} ${level}`;
-  const displaySp = `${REP.display[rankKey].replace('-', ' ')} ${level}`;
-  return guild.roles.cache.find(r => r.name === expected || r.name.endsWith(display) || r.name.endsWith(displaySp)) || null;
-};
-
-const isRepRoleName = (name) =>
-  RANK_KEYS.some(rk =>
-    LEVELS.some(lv => {
-      const expected  = REP.makeRoleName(rk, lv);
-      const display   = `${REP.display[rk]} ${lv}`;
-      const displaySp = `${REP.display[rk].replace('-', ' ')} ${lv}`;
-      return name === expected || name.endsWith(display) || name.endsWith(displaySp);
-    })
-  );
-
-const removeAllRepRoles = async (member) => {
-  const toRemove = member.roles.cache.filter(r => isRepRoleName(r.name));
-  if (toRemove.size) await member.roles.remove([...toRemove.values()], 'REP update (only one active REP role)');
-};
-
-// ================= Onboarding: DM-Reminder Loop =================
-async function scheduleReminderLoop(guild, userId, first = false) {
-  try {
-    const member = await guild.members.fetch(userId).catch(() => null);
-    if (!member) return;
-
-    const isMember = member.roles.cache.some(r => r.name === ROLE_ACCESS_NAME);
-    if (isMember) return;
-
-    const roleChannel = guild.channels.cache.find(ch => ch.type === ChannelType.GuildText && ch.name.includes('rolle-zuweisen'));
-    const text = first
-      ? `👋 Willkommen auf **${guild.name}**! Bitte wähle dein **Land** in ${roleChannel ?? '#rolle-zuweisen'}, um alle Kanäle freizuschalten.`
-      : `⏰ Erinnerung: Wähle bitte dein **Land** in ${roleChannel ?? '#rolle-zuweisen'}, damit du die Rolle **${ROLE_ACCESS_NAME}** erhältst.`;
-
-    await member.send(text).catch(() => {});
-    setTimeout(() => scheduleReminderLoop(guild, userId, false), REMIND_REPEAT_HOURS * 60 * 60 * 1000);
-  } catch (e) {
-    console.error('reminder loop error:', e);
-  }
-}
-
-// ================= Welcome Embed + Button =================
-async function sendWelcomeWithButton(member) {
-  const guild = member.guild;
-
-  const welcome = guild.channels.cache.find(
-    ch => ch.type === ChannelType.GuildText && ch.name.toLowerCase().includes('willkommen')
-  );
-  const roleChannel = guild.channels.cache.find(
-    ch => ch.type === ChannelType.GuildText && ch.name.toLowerCase().includes('rolle-zuweisen')
-  );
-  if (!welcome) return;
-
-  // Duplikate vermeiden
-  const recent = await welcome.messages.fetch({ limit: 20 }).catch(() => null);
-  const already = recent?.find(m =>
-    m.author?.id === guild.members.me.id &&
-    m.content?.includes(`[[WLC:${member.id}]]`)
-  );
-  if (already) return;
-
-  const embed = new EmbedBuilder()
-    .setColor(0x2ecc71)
-    .setTitle(`👋 Willkommen ${member.user.username}!`)
-    .setDescription(
-      `Schön, dass du in der **${guild.name}** gelandet bist!\n\n` +
-      `➡ Bitte wähle zuerst dein **Land** in ${roleChannel ?? '#rolle-zuweisen'}, um freigeschaltet zu werden.\n` +
-      `Danach kannst du Plattform, Position & Spielstil hinzufügen.`
-    )
-    .setThumbnail(member.user.displayAvatarURL({ dynamic: true }))
-    .setFooter({ text: 'NBA2K DACH Community' });
-
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId('goto:roles')
-      .setLabel('→ Rollen auswählen')
-      .setStyle(ButtonStyle.Primary)
-  );
-
-  await welcome.send({
-    content: `[[WLC:${member.id}]]`,
-    embeds: [embed],
-    components: [row]
-  }).catch(() => {});
-}
-
-// ================= Countdown: einmalig in #ankündigungen posten =================
-async function postReleaseCountdown(guild) {
-  const releaseTimestamp = 1756490400; // 29.08.2025 16:00 MESZ
-  const channel = guild.channels.cache.find(
-    ch => ch.type === ChannelType.GuildText && ch.name.includes('ankündigungen')
-  );
-  if (!channel) return;
-
-  // ✅ Marker gegen Doppelposts
-  const recent = await channel.messages.fetch({ limit: 20 }).catch(() => null);
-  const already = recent?.find(m =>
-    m.author?.id === guild.members.me.id &&
-    m.content?.includes('[[COUNTDOWN_2K26]]')
-  );
-  if (already) return;
-
-  const embed = new EmbedBuilder()
-    .setColor(0x1d428a) // NBA Blau
-    .setTitle('🏀 NBA2K26 Release Countdown')
-    .setDescription(
-      `📢 Offizieller Release: <t:${releaseTimestamp}:F>\n\n` +
-      `⏳ **Countdown:** <t:${releaseTimestamp}:R>\n\n` +
-      `🔥 Macht euch bereit für das nächste Kapitel in NBA2K!`
-    )
-    .setFooter({ text: 'NBA2K DACH Community' })
-    .setThumbnail('https://upload.wikimedia.org/wikipedia/en/6/6f/NBA_2K_series_logo.png');
-
-  await channel.send({
-    content: '[[COUNTDOWN_2K26]]',
-    embeds: [embed]
-  }).catch(() => {});
-}
-
-// ================= Events =================
-client.once('ready', async () => {
+/* ===================== Ready ===================== */
+client.once('ready', () => {
   console.log(`✅ Eingeloggt als ${client.user.tag}`);
-  client.user.setPresence({ activities: [{ name: 'NBA 2K DACH • /setup2k' }], status: 'online' });
-
-  // Countdown automatisch in Ankündigungen posten (einmalig)
-  for (const [, guild] of client.guilds.cache) {
-    await postReleaseCountdown(guild);
-  }
+  client.user.setPresence({ activities: [{ name: '🔎 /lfg – Squad-Suche' }], status: 'online' });
 });
 
-// Slash-Commands
+/* ===================== Autocomplete (squad_name) ===================== */
 client.on(Events.InteractionCreate, async (i) => {
+  if (!i.isAutocomplete()) return;
   try {
-    if (!i.isChatInputCommand()) return;
+    if (i.commandName !== 'lfg' || i.options.getFocused(true).name !== 'squad_name') return;
+    const q = (i.options.getFocused() || '').toLowerCase();
+    const free = SQUAD_NAME_POOL.filter(n => !isSquadNameTaken(i.guild, n));
+    const filtered = free.filter(n => n.toLowerCase().includes(q)).slice(0, 25);
+    await i.respond(filtered.map(n => ({ name: n, value: n })));
+  } catch {}
+});
 
-    // /setup2k – ganze Info-Struktur + Buttons + Verify-Text
+/* ===================== Slash Commands ===================== */
+client.on(Events.InteractionCreate, async (i) => {
+  if (!i.isChatInputCommand()) return;
+
+  try {
+    /* ---------- /setup2k ---------- */
     if (i.commandName === 'setup2k') {
       if (!i.memberPermissions.has(PermissionsBitField.Flags.Administrator))
         return i.reply({ content: '⛔ Nur Admins dürfen /setup2k ausführen.', ephemeral: true });
-      if (!i.guild.members.me.permissions.has(PermissionFlagsBits.ManageChannels))
-        return i.reply({ content: '⛔ Mir fehlt **Kanäle verwalten**.', ephemeral: true });
 
-      if (!i.deferred && !i.replied) await i.deferReply({ ephemeral: true });
-      const { chRoles, chVerify } = await createInfoAndButtons(i.guild);
-      try { await setupMediaOnly(i.guild); } catch {}
-      return i.editReply(`✅ Setup aktualisiert.\n• Rollen-Buttons in ${chRoles}\n• Verifizierung in ${chVerify}`);
+      await i.deferReply({ ephemeral: true });
+
+      // Kategorie & Kanäle
+      const cat = await ensureCategory(i.guild, BASE_ROLES.categoryInfo);
+      const chRules = await ensureTextChannel(i.guild, BASE_ROLES.channelRules, cat.id);
+      const chNews  = await ensureTextChannel(i.guild, BASE_ROLES.channelNews,  cat.id);
+      const chRoles = await ensureTextChannel(i.guild, BASE_ROLES.channelRoles, cat.id);
+
+      // Rollen-Buttons vorbereiten
+      const groups = [
+        { key: 'platforms', label: 'Plattform', list: BUTTON_LABELS.platforms },
+        { key: 'positions', label: 'Position',  list: BUTTON_LABELS.positions },
+        { key: 'styles',    label: 'Spielstil', list: BUTTON_LABELS.styles },
+        { key: 'countries', label: 'Land',      list: BUTTON_LABELS.countries },
+      ];
+
+      const rows = [];
+      for (const g of groups) {
+        // max 5 Buttons pro Reihe
+        const chunk = (arr, n=5) => arr.reduce((a,_,i)=> (i%n? a[a.length-1].push(arr[i]):a.push([arr[i]]), a),[]);
+        rows.push(...chunk(g.list).map(part => {
+          const row = new ActionRowBuilder();
+          row.addComponents(...part.map(v =>
+            new ButtonBuilder()
+              .setCustomId(`r:set:${g.key}:${v}`)
+              .setLabel(v)
+              .setStyle(ButtonStyle.Primary)
+          ));
+          return row;
+        }));
+      }
+      // Clear-Button
+      rows.push(new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('r:clearall').setLabel('Alle Auswahl-Rollen entfernen').setStyle(ButtonStyle.Secondary)
+      ));
+
+      const text =
+        '🎯 **Rollen auswählen**\n' +
+        '• Wähle **Plattform, Position, Spielstil, Land** per Buttons unten.\n' +
+        `• Nach der ersten Auswahl erhältst du automatisch die Rolle **${BASE_ROLES.accessRole}**.\n` +
+        '• Deine Auswahl kannst du jederzeit ändern – pro Gruppe maximal **1 Rolle**.\n\n' +
+        '_(Tipp: Danach kannst du im Kanal **🧾│rep-verifizierung** deinen 2K-REP eintragen lassen.)_';
+
+      // vorhandene Bot-Nachricht upserten
+      const recent = await chRoles.messages.fetch({ limit: 20 }).catch(()=>null);
+      const old = recent?.find(m => m.author?.id === i.guild.members.me.id && m.content?.includes('[[ROLES_MSG]]'));
+      if (old) {
+        await old.edit({ content: `${text}\n\n[[ROLES_MSG]]`, components: rows });
+      } else {
+        await chRoles.send({ content: `${text}\n\n[[ROLES_MSG]]`, components: rows });
+      }
+
+      await i.editReply(`✅ Fertig: ${chRules} ${chNews} ${chRoles}`);
+      return;
     }
 
-    // /setuprep – nur Verifizierungskanal
+    /* ---------- /setuprep ---------- */
     if (i.commandName === 'setuprep') {
       if (!i.memberPermissions.has(PermissionsBitField.Flags.Administrator))
         return i.reply({ content: '⛔ Nur Admins dürfen /setuprep ausführen.', ephemeral: true });
-      if (!i.guild.members.me.permissions.has(PermissionFlagsBits.ManageChannels))
-        return i.reply({ content: '⛔ Mir fehlt **Kanäle verwalten**.', ephemeral: true });
 
-      if (!i.deferred && !i.replied) await i.deferReply({ ephemeral: true });
-      const infoCat  = await ensureCategory(i.guild, BASE_ROLES.categoryInfo);
-      const chVerify = await ensureTextInCategory(i.guild, BASE_ROLES.channelVerify, infoCat);
-      await upsertBotMessage(chVerify, { content: VERIFY_TEXT, marker: '[[BOT_REP_VERIFY_INFO_V1]]' });
-      return i.editReply(`✅ REP-Verifizierungskanal eingerichtet: ${chVerify}`);
+      await i.deferReply({ ephemeral: true });
+
+      const cat = await ensureCategory(i.guild, BASE_ROLES.categoryInfo);
+      const chVerify = await ensureTextChannel(i.guild, BASE_ROLES.channelVerify, cat.id);
+
+      const pinText = [
+        '🧾 **REP-Verifizierung**',
+        '1) Poste einen **Screenshot** deines aktuellen REP.',
+        '2) Ein Mod prüft und setzt deinen Rang mit **/rep**.',
+        '3) Bei Upgrade später einfach wieder Screenshot posten.',
+        'ℹ️ Ränge: Rookie / Starter / All-Star (Reserve) / Superstar (Reserve) / Veteran / Legend (je Level 1–5).'
+      ].join('\n');
+
+      // upsert & pin marker
+      const recent = await chVerify.messages.fetch({ limit: 20 }).catch(()=>null);
+      const old = recent?.find(m => m.author?.id === i.guild.members.me.id && m.content?.includes('[[REP_PIN]]'));
+      if (old) await old.edit(`${pinText}\n\n[[REP_PIN]]`); else await chVerify.send(`${pinText}\n\n[[REP_PIN]]`);
+
+      await i.editReply(`✅ REP-Verifizierung eingerichtet: ${chVerify}`);
+      return;
     }
 
-    // /setupmedia – Clips/VODs/Fotos
+    /* ---------- /setupmedia ---------- */
     if (i.commandName === 'setupmedia') {
       if (!i.memberPermissions.has(PermissionsBitField.Flags.Administrator))
         return i.reply({ content: '⛔ Nur Admins dürfen /setupmedia ausführen.', ephemeral: true });
-      if (!i.guild.members.me.permissions.has(PermissionFlagsBits.ManageChannels))
-        return i.reply({ content: '⛔ Mir fehlt **Kanäle verwalten**.', ephemeral: true });
 
-      if (!i.deferred && !i.replied) await i.deferReply({ ephemeral: true });
-      const { chClips, chVods, chFotos } = await setupMediaOnly(i.guild);
-      return i.editReply(`✅ Media eingerichtet:\n• Clips: ${chClips}\n• Full-Matches: ${chVods}\n• Fotos: ${chFotos}`);
+      await i.deferReply({ ephemeral: true });
+
+      const cat = await ensureCategory(i.guild, '🎥 Media');
+      const clips = await ensureTextChannel(i.guild, '🎬│clips', cat.id);
+      const full  = await ensureTextChannel(i.guild, '📺│full-matches', cat.id);
+      const fotos = await ensureTextChannel(i.guild, '📷│fotos', cat.id);
+
+      const makePin = (kind) => [
+        `📌 **${kind} Regeln**`,
+        '• Nur NBA2K Content (Gameplay, Highlights).',
+        '• Keine Beleidigungen, kein Spam.',
+        '• Achtet auf sinnvolle Titel/Beschreibung.'
+      ].join('\n');
+
+      const upsertPin = async (channel, marker) => {
+        const r = await channel.messages.fetch({ limit: 20 }).catch(()=>null);
+        const old = r?.find(m => m.author?.id === i.guild.members.me.id && m.content?.includes(marker));
+        if (old) await old.edit(`${makePin(channel.name)}\n\n${marker}`);
+        else await channel.send(`${makePin(channel.name)}\n\n${marker}`);
+      };
+
+      await upsertPin(clips, '[[MEDIA_CLIPS]]');
+      await upsertPin(full,  '[[MEDIA_FULL]]');
+      await upsertPin(fotos, '[[MEDIA_FOTOS]]');
+
+      await i.editReply(`✅ Media-Kanäle: ${clips} ${full} ${fotos}`);
+      return;
     }
 
-    // /create_rep_roles – 30 REP-Rollen erzeugen
+    /* ---------- /create_rep_roles ---------- */
     if (i.commandName === 'create_rep_roles') {
       if (!i.memberPermissions.has(PermissionsBitField.Flags.Administrator))
-        return i.reply({ content: '⛔ Dir fehlt **Administrator**.', ephemeral: true });
+        return i.reply({ content: '⛔ Nur Admins.', ephemeral: true });
 
-      const guild = i.guild;
-      const template = guild.roles.cache.find(r => r.name === TEMPLATE_ROLE);
-      if (!template) return i.reply({ content: `⚠️ Vorlage-Rolle **${TEMPLATE_ROLE}** nicht gefunden.`, ephemeral: true });
+      await i.deferReply({ ephemeral: true });
 
-      if (!i.deferred && !i.replied) await i.deferReply({ ephemeral: true });
-      let created = 0;
-      for (const rk of RANK_KEYS) {
-        for (const lv of LEVELS) {
-          if (findRoleByRankLevel(guild, rk, lv)) continue;
-          await guild.roles.create({
-            name: REP.makeRoleName(rk, lv),
-            permissions: template.permissions,
-            color: template.color,
-            hoist: true,
-            reason: 'NBA2K25 REP setup'
-          });
-          created++;
+      const created = [];
+      for (const key of Object.keys(REP.display)) {
+        for (const lvl of REP.levels) {
+          const name = REP.makeRoleName(key, lvl);
+          const r = await findOrCreateRole(i.guild, name);
+          created.push(r.name);
         }
       }
-      return i.editReply(`✅ REP-Rollen erstellt. Neu: **${created}**.`);
+      await i.editReply(`✅ REP-Rollen sichergestellt (${created.length}).`);
+      return;
     }
 
-    // /rep – Rolle setzen
+    /* ---------- /rep ---------- */
     if (i.commandName === 'rep') {
       if (!i.memberPermissions.has(PermissionsBitField.Flags.ManageRoles))
-        return i.reply({ content: '⛔ Dir fehlt **Manage Roles**.', ephemeral: true });
+        return i.reply({ content: '⛔ Nur Mods dürfen /rep.', ephemeral: true });
 
-      const user = i.options.getMember('user');
-      const rankKey = normRank(i.options.getString('rank'));
-      const level = parseInt(i.options.getString('level'), 10);
+      const user = i.options.getUser('user', true);
+      const rankKey = i.options.getString('rank', true);
+      const level = i.options.getString('level', true);
 
-      if (!user) return i.reply({ content: '❌ User nicht gefunden.', ephemeral: true });
-      if (!RANK_KEYS.includes(rankKey)) return i.reply({ content: '❌ Unbekannter Rang.', ephemeral: true });
-      if (!LEVELS.includes(level)) return i.reply({ content: '❌ Stufe muss 1–5 sein.', ephemeral: true });
+      await i.deferReply({ ephemeral: true });
+      const member = await i.guild.members.fetch(user.id).catch(()=>null);
+      if (!member) return i.editReply('❌ Nutzer nicht gefunden.');
 
-      const role = findRoleByRankLevel(i.guild, rankKey, level);
-      if (!role) return i.reply({ content: `⚠️ Rolle **${REP.display[rankKey]} ${level}** existiert nicht. Erst /create_rep_roles ausführen.`, ephemeral: true });
-      if (i.guild.members.me.roles.highest.comparePositionTo(role) <= 0)
-        return i.reply({ content: '❌ Meine Bot-Rolle steht **unter** der Zielrolle.', ephemeral: true });
+      // alte REP-Rollen entfernen
+      const repRoleNames = [];
+      for (const key of Object.keys(REP.display)) {
+        for (const lvl of REP.levels) repRoleNames.push(REP.makeRoleName(key, lvl));
+      }
+      const toRemove = member.roles.cache.filter(r => repRoleNames.includes(r.name));
+      for (const r of toRemove.values()) await member.roles.remove(r).catch(()=>{});
 
-      if (!i.deferred && !i.replied) await i.deferReply({ ephemeral: true });
-      await removeAllRepRoles(user);
-      await user.roles.add(role, `Set REP to ${role.name}`);
-      return i.editReply(`✅ ${user} ist jetzt **${role.name}**. (Andere REP-Rollen entfernt)`);
+      // neue Rolle sicherstellen und vergeben
+      const targetName = REP.makeRoleName(rankKey, level);
+      const target = await findOrCreateRole(i.guild, targetName);
+      await member.roles.add(target).catch(()=>{});
+
+      await i.editReply(`✅ ${member} → **${target.name}** gesetzt (alte REP-Rollen entfernt).`);
+      return;
     }
 
-    // /repclear – alle REP-Rollen entfernen
+    /* ---------- /repclear ---------- */
     if (i.commandName === 'repclear') {
       if (!i.memberPermissions.has(PermissionsBitField.Flags.ManageRoles))
-        return i.reply({ content: '⛔ Dir fehlt **Manage Roles**.', ephemeral: true });
-      const user = i.options.getMember('user');
-      if (!user) return i.reply({ content: '❌ User nicht gefunden.', ephemeral: true });
-      await removeAllRepRoles(user);
-      return i.reply({ content: `🧹 Alle REP-Rollen bei ${user} entfernt.`, ephemeral: true });
+        return i.reply({ content: '⛔ Nur Mods dürfen /repclear.', ephemeral: true });
+
+      const user = i.options.getUser('user', true);
+      await i.deferReply({ ephemeral: true });
+      const member = await i.guild.members.fetch(user.id).catch(()=>null);
+      if (!member) return i.editReply('❌ Nutzer nicht gefunden.');
+
+      const repRoleNames = [];
+      for (const key of Object.keys(REP.display)) {
+        for (const lvl of REP.levels) repRoleNames.push(REP.makeRoleName(key, lvl));
+      }
+      const toRemove = member.roles.cache.filter(r => repRoleNames.includes(r.name));
+      for (const r of toRemove.values()) await member.roles.remove(r).catch(()=>{});
+
+      await i.editReply(`✅ REP-Rollen bei ${member} entfernt.`);
+      return;
+    }
+
+    /* ---------- /setuplfg ---------- */
+    if (i.commandName === 'setuplfg') {
+      if (!i.memberPermissions.has(PermissionsBitField.Flags.Administrator))
+        return i.reply({ content: '⛔ Nur Admins dürfen /setuplfg ausführen.', ephemeral: true });
+
+      await i.deferReply({ ephemeral: true });
+      const ch = await ensureLfgChannel(i.guild);
+
+      const pinText = [
+        '📌 **So funktioniert die Squad-Suche**',
+        '• **/lfg**: Modus, Plattform, Slots',
+        '• **Optional**:',
+        '  – **squad_name**: freien Namen aus der Liste wählen (Autocomplete, z. B. „Squad Mamba“)',
+        '  – **crossplay**: PS5/Xbox gemeinsam zulassen (✅/❌)',
+        '• **Beitreten/Verlassen** per Button',
+        '• Wenn **voll** → [VOLL], **privater Voice** in „🎤 Squads“ + **privater Thread**',
+        '• **Auflösen**: Host/Mods beenden den Squad (Rolle/Voice wird gelöscht, Thread archiviert)',
+        `• Standard-Ablauf: **${LFG_DEFAULT_TTL_MIN} Minuten**`,
+        '• Bitte respektvoll bleiben, kein Spam'
+      ].join('\n');
+
+      const recent = await ch.messages.fetch({ limit: 20 }).catch(() => null);
+      const already = recent?.find(m => m.author?.id === i.guild.members.me.id && m.content?.includes('[[LFG_PIN]]'));
+      if (already) await already.edit(`${pinText}\n\n[[LFG_PIN]]`); else await ch.send(`${pinText}\n\n[[LFG_PIN]]`);
+
+      return i.editReply(`✅ LFG-Kanal eingerichtet: ${ch}`);
+    }
+
+    /* ---------- /lfg ---------- */
+    if (i.commandName === 'lfg') {
+      const mode = i.options.getString('modus', true);
+      const platform = i.options.getString('plattform', true);
+      const crossplay = i.options.getBoolean('crossplay') ?? false;
+      const positions = i.options.getString('positionen', true);
+      const slots = i.options.getInteger('slots', true);
+      const note = i.options.getString('notiz') || '';
+      const ttlMin = i.options.getInteger('ttl_minutes') ?? LFG_DEFAULT_TTL_MIN;
+
+      const raw = i.options.getString('squad_name') || '';
+      let name = raw ? normSquadName(raw) : '';
+      if (name) {
+        if (!isNameAllowed(name)) return i.reply({ content: `❌ **${name}** ist kein erlaubter Squad-Name.`, ephemeral: true });
+        if (isSquadNameTaken(i.guild, name)) return i.reply({ content: `❌ **${name}** ist bereits vergeben.`, ephemeral: true });
+      } else {
+        name = SQUAD_NAME_POOL.find(n => !isSquadNameTaken(i.guild, n));
+        if (!name) return i.reply({ content: '❌ Alle Squad-Namen sind aktuell vergeben. Bitte später erneut versuchen.', ephemeral: true });
+      }
+
+      await i.deferReply({ ephemeral: true });
+
+      const role = await reserveSquadName(i.guild, name);
+      const host = await i.guild.members.fetch(i.user.id).catch(() => null);
+      if (host) await host.roles.add(role).catch(() => {});
+
+      const ch = await ensureLfgChannel(i.guild);
+      const joined = [i.user.id];
+
+      const base = { name, author: i.user.id, mode, platform, crossplay, positions, slots };
+      const embed = renderLfgEmbed({ ...base, joinedIds: joined });
+      const state = { ...base, joined, roleId: role.id, voiceId: null, threadId: null, ttlMin };
+
+      writeStateToEmbed(embed, state);
+
+      const post = await ch.send({ embeds: [embed], components: [buildLfgRow('pending', false)] });
+      await post.edit({ components: [buildLfgRow(post.id, false)] });
+
+      // öffentlicher Thread solange nicht voll
+      const thread = await post.startThread({ name: `[${mode}] ${name} chat`, autoArchiveDuration: 1440 }).catch(() => null);
+      state.threadId = thread?.id || null;
+      const upd = renderLfgEmbed({ ...base, joinedIds: joined });
+      writeStateToEmbed(upd, state);
+      await post.edit({ embeds: [upd] });
+
+      await i.editReply(`✅ **${name}** ist live: ${post.url}${thread ? ` (Thread: ${thread})` : ''}${note ? `\n📝 ${note}` : ''}`);
+
+      // TTL Ablauf
+      setTimeout(async () => {
+        try {
+          const msg = await ch.messages.fetch(post.id).catch(() => null);
+          if (!msg) return;
+          const cur = readStateFromEmbed(msg);
+          if (!cur) return;
+
+          const emb = renderLfgEmbed({ ...cur, joinedIds: cur.joined });
+          emb.setColor(0x777777).setTitle(`⏲️ [ABGELAUFEN] ${cur.name} – ${cur.mode} (${cur.platform}${cur.crossplay ? ' • Crossplay' : ''})`);
+          writeStateToEmbed(emb, cur);
+          await msg.edit({ embeds: [emb], components: [buildLfgRow(post.id, true)] });
+
+          if (cur.threadId) {
+            const thr = i.guild.channels.cache.get(cur.threadId);
+            await thr?.setArchived(true).catch(() => {});
+            await thr?.setLocked(true).catch(() => {});
+          }
+          await freeSquadResources(i.guild, cur);
+        } catch {}
+      }, ttlMin * 60 * 1000);
+
+      return;
     }
 
   } catch (err) {
@@ -482,144 +463,143 @@ client.on(Events.InteractionCreate, async (i) => {
   }
 });
 
-// Buttons (Rollen & Navigation)
+/* ===================== Buttons (Rollen & LFG) ===================== */
 client.on(Events.InteractionCreate, async (i) => {
+  if (!i.isButton()) return;
+
   try {
-    if (!i.isButton()) return;
-    const [prefix] = i.customId.split(':');
+    const id = i.customId;
 
-    if (prefix === 'goto') {
-      const [, target] = i.customId.split(':');
-      if (target === 'roles') {
-        const roleChannel = i.guild.channels.cache.find(ch => ch.type === ChannelType.GuildText && ch.name.toLowerCase().includes('rolle-zuweisen'));
-        return i.reply({ content: roleChannel ? `➡ Bitte wähle hier: ${roleChannel}` : '❌ Rollen-Kanal nicht gefunden.', flags: 64 });
+    /* ----- Rollen-Buttons ----- */
+    if (id === 'r:clearall') {
+      const groups = ['platforms','positions','styles','countries'];
+      const allNames = groups.flatMap(k => BUTTON_LABELS[k]);
+      const toRemove = i.member.roles.cache.filter(r => allNames.includes(r.name));
+      for (const r of toRemove.values()) await i.member.roles.remove(r).catch(()=>{});
+      return i.reply({ content: '✅ Deine Auswahl-Rollen wurden entfernt.', ephemeral: true });
+    }
+    if (id.startsWith('r:set:')) {
+      const [, , group, value] = id.split(':'); // r:set:group:value
+      if (!BUTTON_LABELS[group] || !BUTTON_LABELS[group].includes(value)) {
+        return i.reply({ content: '❌ Ungültige Auswahl.', ephemeral: true });
       }
-      if (target === 'repverify') {
-        const repChannel = i.guild.channels.cache.find(ch => ch.type === ChannelType.GuildText && ch.name.toLowerCase().includes('rep-verifiz'));
-        return i.reply({ content: repChannel ? `➡ Hier geht’s zur **REP-Verifizierung**: ${repChannel}` : '❌ Verifizierungskanal nicht gefunden.', flags: 64 });
+      // pro Gruppe nur 1 Rolle
+      const groupNames = BUTTON_LABELS[group];
+      const remove = i.member.roles.cache.filter(r => groupNames.includes(r.name));
+      for (const r of remove.values()) await i.member.roles.remove(r).catch(()=>{});
+      const role = await findOrCreateRole(i.guild, value);
+      await i.member.roles.add(role).catch(()=>{});
+
+      // Zugang geben
+      if (BASE_ROLES.accessRole) {
+        const access = await findOrCreateRole(i.guild, BASE_ROLES.accessRole);
+        await i.member.roles.add(access).catch(()=>{});
       }
-      return;
+      return i.reply({ content: `✅ Rolle gesetzt: **${value}**`, ephemeral: true });
     }
 
-    const roleName = mapCustomIdToRoleName(i.customId);
-    if (!roleName) return i.reply({ content: 'Unbekannter Button.', flags: 64 });
+    /* ----- LFG-Buttons ----- */
+    if (!id.startsWith('lfg:')) return;
 
-    let role = i.guild.roles.cache.find(r => r.name === roleName);
-    if (!role) role = await i.guild.roles.create({ name: roleName });
+    const [, action, msgId] = id.split(':');
+    const msg = await i.channel.messages.fetch(msgId).catch(() => null);
+    if (!msg) return i.reply({ content: '❌ LFG-Beitrag nicht gefunden.', flags: 64 });
 
+    const state = readStateFromEmbed(msg);
+    if (!state) return i.reply({ content: '❌ Ungültiger LFG-Status.', flags: 64 });
+
+    const guild = i.guild;
+    const role = guild.roles.cache.get(state.roleId);
     const member = i.member;
-    const hasRole = member.roles.cache.has(role.id);
+    const isHost = i.user.id === state.author;
+    const isMod = i.memberPermissions.has(PermissionsBitField.Flags.ManageMessages);
 
-    if (hasRole) {
-      await member.roles.remove(role);
-      return i.reply({ content: `❎ Rolle **${roleName}** entfernt.`, flags: 64 });
+    const joined = new Set(state.joined || []);
+    const isFull = joined.size >= state.slots;
+
+    if (action === 'join') {
+      if (joined.has(i.user.id)) return i.reply({ content: 'Du bist bereits in diesem Squad.', flags: 64 });
+      if (isFull) return i.reply({ content: 'Dieser Squad ist bereits voll.', flags: 64 });
+      joined.add(i.user.id);
+      if (role) await member.roles.add(role).catch(() => {});
+    }
+    if (action === 'leave') {
+      if (!joined.has(i.user.id)) return i.reply({ content: 'Du bist in diesem Squad nicht eingetragen.', flags: 64 });
+      joined.delete(i.user.id);
+      if (role) await member.roles.remove(role).catch(() => {});
+    }
+    if (action === 'close') {
+      if (!isHost && !isMod) return i.reply({ content: 'Nur der Ersteller oder Mods dürfen auflösen.', flags: 64 });
+
+      const emb = renderLfgEmbed({ ...state, joinedIds: [...joined] })
+        .setColor(0x888888)
+        .setTitle(`🔒 [AUFGELÖST] ${state.name} – ${state.mode} (${state.platform}${state.crossplay ? ' • Crossplay' : ''})`);
+      writeStateToEmbed(emb, state);
+      await msg.edit({ embeds: [emb], components: [buildLfgRow(msg.id, true)] });
+
+      if (state.threadId) {
+        const thr = guild.channels.cache.get(state.threadId);
+        await thr?.setArchived(true).catch(() => {});
+        await thr?.setLocked(true).catch(() => {});
+      }
+      await freeSquadResources(guild, state);
+      return i.reply({ content: '🔒 Squad aufgelöst.', flags: 64 });
     }
 
-    await member.roles.add(role);
+    // bei "voll" → privaten Voice & privaten Thread
+    const newState = { ...state, joined: [...joined] };
+    const nowFull = newState.joined.length >= newState.slots;
 
-    const [btnPrefix] = i.customId.split(':');
-    if (btnPrefix === 'country') {
-      const access = await ensureRole(i.guild, ROLE_ACCESS_NAME);
-      await member.roles.add(access).catch(() => {});
-      const block = i.guild.roles.cache.find(r => r.name.toLowerCase().includes('ohne') && r.name.toLowerCase().includes('rolle'));
-      if (block) await member.roles.remove(block).catch(() => {});
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('goto:repverify').setLabel('➡ Zur REP-Verifizierung').setStyle(ButtonStyle.Primary)
-      );
-      return i.reply({ content: `✅ **${roleName}** gesetzt. Du bist freigeschaltet!\nHol dir jetzt deinen **REP-Rang** über den Button unten.`, components: [row], flags: 64 });
+    if (nowFull && !state.voiceId) {
+      await createPrivateVoiceIfFull(guild, newState);
+
+      const privThread = await i.channel.threads.create({
+        name: `[${newState.mode}] ${newState.name} private`,
+        autoArchiveDuration: 1440,
+        type: ChannelType.PrivateThread
+      }).catch(() => null);
+
+      if (privThread) {
+        newState.threadId = privThread.id;
+        for (const uid of newState.joined) {
+          await privThread.members.add(uid).catch(() => {});
+        }
+      }
+      if (state.threadId) {
+        const old = guild.channels.cache.get(state.threadId);
+        await old?.setArchived(true).catch(() => {});
+        await old?.setLocked(true).catch(() => {});
+      }
     }
 
-    return i.reply({ content: `✅ Rolle **${roleName}** hinzugefügt.`, flags: 64 });
+    const emb = renderLfgEmbed({ ...newState, joinedIds: newState.joined });
+    writeStateToEmbed(emb, newState);
+    await msg.edit({ embeds: [emb], components: [buildLfgRow(msg.id, newState.joined.length >= newState.slots)] });
+
+    return i.reply({ content: (action === 'join' ? '✅ Beigetreten.' : '✅ Verlassen.'), flags: 64 });
+
   } catch (err) {
     console.error('interaction (button) error:', err);
     try { await i.reply({ content: '❌ Fehler bei der Ausführung.', flags: 64 }); } catch {}
   }
 });
 
-// Auto-Reply im Verifizierungskanal (Screenshot erkannt)
+/* ===================== Nachrichten-Hooks (REP-Channel) ===================== */
 client.on(Events.MessageCreate, async (msg) => {
   try {
-    if (msg.author.bot) return;
-    if (msg.channel.type !== ChannelType.GuildText) return;
-
-    const name = msg.channel.name.toLowerCase();
-    if (!(name.includes('rep-verifiz'))) return;
-
-    const hasAttachment = msg.attachments?.size > 0;
-    const hasImageUrl = /(https?:\/\/\S+\.(png|jpe?g|gif|webp))/i.test(msg.content || '');
-    if (!hasAttachment && !hasImageUrl) return;
-
-    await msg.reply(
-      '✅ **Screenshot erhalten!** Ein Mod prüft deinen REP und setzt dir die passende Rolle.\n' +
-      'ℹ️ Mods: `/rep user:@Name rank:<Rookie|Starter|All-Star (Reserve)|Superstar (Reserve)|Veteran|Legend> level:<1–5>`'
-    ).catch(() => {});
-  } catch (e) {
-    console.error('verify auto-reply error:', e);
-  }
-});
-
-// VOD-Kanal: Dateiuploads abräumen (nur Links)
-client.on(Events.MessageCreate, async (msg) => {
-  try {
-    if (msg.author.bot) return;
-    if (msg.channel.type !== ChannelType.GuildText) return;
-
-    const vodName = BASE_ROLES.channelVods.toLowerCase().replace(/[^\w]/g,'');
-    const chanMatch = msg.channel.name.toLowerCase().replace(/[^\w]/g,'').includes(vodName);
-    if (!chanMatch) return;
-
-    if (msg.attachments?.size > 0) {
-      await msg.delete().catch(() => {});
-      const warn = await msg.channel.send(`${msg.member}, bitte **nur Links** posten – Datei-Uploads sind in ${msg.channel} deaktiviert.`).catch(() => null);
-      if (warn) setTimeout(() => warn.delete().catch(() => {}), 10000);
+    if (!msg.guild || msg.author.bot) return;
+    // Wenn im REP-Verify Channel ein Bild gepostet wird → kurze Bestätigung
+    if (msg.channel.name === BASE_ROLES.channelVerify.replace(/^[^a-zA-Z0-9]+/, '')) return; // falls Prefix-Emoji abweicht, kannst du den Check anpassen
+    if (msg.channel.name === BASE_ROLES.channelVerify) {
+      if (msg.attachments.size > 0) {
+        const isImage = [...msg.attachments.values()].some(a => (a.contentType||'').startsWith('image/'));
+        if (isImage) {
+          await msg.reply('✅ Danke! Ein Moderator prüft deinen Screenshot und setzt deinen REP mit **/rep**.');
+        }
+      }
     }
-  } catch (e) {
-    console.error('vod auto-mod error:', e);
-  }
+  } catch {}
 });
 
-// Fotos-Kanal: nur Bilder
-client.on(Events.MessageCreate, async (msg) => {
-  try {
-    if (msg.author.bot) return;
-    if (msg.channel.type !== ChannelType.GuildText) return;
-
-    const photosName = (BASE_ROLES.channelPhotos || '📷│fotos').toLowerCase().replace(/[^\w]/g,'');
-    const chanOk = msg.channel.name.toLowerCase().replace(/[^\w]/g,'').includes(photosName);
-    if (!chanOk) return;
-
-    const hasImgAttach = [...msg.attachments.values()].some(a => (a.contentType || '').startsWith('image/'));
-    const hasImgLink = /(https?:\/\/\S+\.(png|jpe?g|gif|webp))/i.test(msg.content || '');
-    const hasNonImageAttach = msg.attachments.size > 0 && !hasImgAttach;
-
-    if (hasNonImageAttach || (!hasImgAttach && !hasImgLink)) {
-      await msg.delete().catch(() => {});
-      const warn = await msg.channel.send(
-        `${msg.member}, **nur NBA 2K-Bilder/Screenshots** sind in ${msg.channel} erlaubt. ` +
-        `Für Videos nutze bitte **#${BASE_ROLES.channelClips}** oder **#${BASE_ROLES.channelVods}**.`
-      ).catch(() => null);
-      if (warn) setTimeout(() => warn.delete().catch(() => {}), 10000);
-    }
-  } catch (e) {
-    console.error('photos auto-mod error:', e);
-  }
-});
-
-// Onboarding – „Ohne Rolle“, Welcome-Embed + Reminder-Loop
-client.on(Events.GuildMemberAdd, async (member) => {
-  try {
-    const guild = member.guild;
-
-    const noRole = await ensureRole(guild, ROLE_BLOCK_NAME);
-    await member.roles.add(noRole).catch(() => {});
-
-    await sendWelcomeWithButton(member);
-
-    setTimeout(() => scheduleReminderLoop(guild, member.id, true), REMIND_FIRST_MIN * 60 * 1000);
-
-  } catch (err) {
-    console.error('guildMemberAdd error:', err);
-  }
-});
-
+/* ===================== Start ===================== */
 client.login(TOKEN);
