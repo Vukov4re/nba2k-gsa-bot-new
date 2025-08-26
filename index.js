@@ -177,6 +177,51 @@ client.on(Events.InteractionCreate, async (i) => {
       return i.editReply('✅ Rollen-Auswahl & Infos wurden gepostet.');
     }
 
+    // ====== LFG: /setuplfg & /lfg (leichte Variante) ======
+    if (i.commandName === 'setuplfg') {
+      const info = await ensureCategory(i.guild, '📢 Info & Regeln');
+      let lfg = i.guild.channels.cache.find(c => c.type === ChannelType.GuildText && c.name === '🔎│squad-suche');
+      if (!lfg) lfg = await i.guild.channels.create({ name: '🔎│squad-suche', type: ChannelType.GuildText, parent: info.id });
+
+      const pin =
+        '📌 **So nutzt du die Squad-Suche**\n' +
+        '• **/lfg** posten (Modus, Plattform, Slots, Positionen)\n' +
+        '• Mit **Beitreten/Verlassen** Buttons verwalten\n' +
+        '• Wenn voll → bitte im Voice verabreden & später **Auflösen** klicken\n' +
+        '• Seid respektvoll & kein Spam';
+
+      const recent = await lfg.messages.fetch({ limit: 20 }).catch(() => null);
+      const mine = recent?.find(m => m.author?.id === i.guild.members.me.id && m.content?.includes('[[LFG_PIN]]'));
+      if (mine) await mine.edit(`${pin}\n\n[[LFG_PIN]]`); else await lfg.send(`${pin}\n\n[[LFG_PIN]]`);
+
+      return i.editReply(`✅ LFG Kanal bereit: ${lfg}`);
+    }
+
+    if (i.commandName === 'lfg') {
+      const mode = i.options.getString('modus', true);
+      const platform = i.options.getString('plattform', true);
+      const positions = i.options.getString('positionen', true);
+      const slots = i.options.getInteger('slots', true);
+      const joined = [i.user.id];
+
+      const embed = new EmbedBuilder()
+        .setColor(0x00A86B)
+        .setTitle(`🔎 Squad – ${mode} (${platform})`)
+        .setDescription(`**Gesucht:** ${positions}\n**Slots:** ${joined.length}/${slots}\n👤 **Host:** <@${i.user.id}>`)
+        .addFields({ name: 'Teilnehmer', value: joined.map(id => `• <@${id}>`).join('\n') })
+        .setFooter({ text: `[[LFG_STATE:${JSON.stringify({ author:i.user.id, slots, joined })}]]` })
+        .setTimestamp();
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('lfg:join').setLabel('Beitreten').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId('lfg:leave').setLabel('Verlassen').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('lfg:close').setLabel('Squad auflösen').setStyle(ButtonStyle.Danger),
+      );
+
+      const msg = await i.channel.send({ embeds: [embed], components: [row] });
+      return i.editReply(`✅ Squad erstellt: ${msg.url}`);
+    }
+
     return i.editReply('❓ Unbekannter Befehl.');
   } catch (err) {
     console.error('interaction (command) error:', err);
@@ -189,40 +234,95 @@ client.on(Events.InteractionCreate, async (i) => {
   try {
     if (!i.isButton()) return;
 
+    // ====== Rollen-Buttons (bestehend) ======
     const [prefix] = i.customId.split(':');
     if (prefix === 'goto') {
       const roleChannel = i.guild.channels.cache.find(ch => ch.type === ChannelType.GuildText && ch.name.includes('rolle-zuweisen'));
       return i.reply({ content: roleChannel ? `➡ Bitte wähle hier: ${roleChannel}` : '❌ Rollen-Kanal nicht gefunden.', flags: 64 });
     }
-
     const roleName = mapCustomIdToRoleName(i.customId);
-    if (!roleName) return i.reply({ content: 'Unbekannter Button.', flags: 64 });
+    if (roleName) {
+      let role = i.guild.roles.cache.find(r => r.name === roleName);
+      if (!role) role = await i.guild.roles.create({ name: roleName });
 
-    let role = i.guild.roles.cache.find(r => r.name === roleName);
-    if (!role) role = await i.guild.roles.create({ name: roleName });
+      const member = i.member;
+      const hasRole = member.roles.cache.has(role.id);
 
-    const member = i.member;
-    const hasRole = member.roles.cache.has(role.id);
+      if (hasRole) {
+        await member.roles.remove(role);
+        return i.reply({ content: `❎ Rolle **${roleName}** entfernt.`, flags: 64 });
+      }
 
-    if (hasRole) {
-      await member.roles.remove(role);
-      return i.reply({ content: `❎ Rolle **${roleName}** entfernt.`, flags: 64 });
+      await member.roles.add(role);
+
+      if (prefix === 'country') {
+        const access = await ensureRole(i.guild, 'Mitglied');
+        await member.roles.add(access).catch(() => {});
+        const block = i.guild.roles.cache.find(r => r.name.toLowerCase().includes('ohne') && r.name.toLowerCase().includes('rolle'));
+        if (block) await member.roles.remove(block).catch(() => {});
+        return i.reply({
+          content: `✅ **${roleName}** gesetzt. Du bist freigeschaltet!\nWähle optional noch **Plattform**, **Position** & **Spielstil**.`,
+          flags: 64
+        });
+      }
+      return i.reply({ content: `✅ Rolle **${roleName}** hinzugefügt.`, flags: 64 });
     }
 
-    await member.roles.add(role);
+    // ====== LFG-Buttons (leicht) ======
+    if (i.customId.startsWith('lfg:')) {
+      const msg = await i.channel.messages.fetch(i.message.id).catch(() => null);
+      const emb = msg?.embeds?.[0];
+      const footer = emb?.footer?.text || '';
+      const m = footer.match(/\[\[LFG_STATE:(.+)\]\]/);
+      if (!m) return i.reply({ content: '❌ LFG Zustand fehlt.', flags: 64 });
 
-    if (prefix === 'country') {
-      const access = await ensureRole(i.guild, 'Mitglied');
-      await member.roles.add(access).catch(() => {});
-      const block = i.guild.roles.cache.find(r => r.name.toLowerCase().includes('ohne') && r.name.toLowerCase().includes('rolle'));
-      if (block) await member.roles.remove(block).catch(() => {});
-      return i.reply({
-        content: `✅ **${roleName}** gesetzt. Du bist freigeschaltet!\nWähle optional noch **Plattform**, **Position** & **Spielstil**.`,
-        flags: 64
-      });
+      let state;
+      try { state = JSON.parse(m[1]); } catch { return i.reply({ content: '❌ LFG Zustand defekt.', flags: 64 }); }
+
+      const joined = new Set(state.joined || []);
+      const author = state.author;
+      const slots = state.slots;
+
+      if (i.customId === 'lfg:join') {
+        if (joined.has(i.user.id)) return i.reply({ content: 'Du bist schon drin.', flags: 64 });
+        if (joined.size >= slots) return i.reply({ content: 'Squad ist voll.', flags: 64 });
+        joined.add(i.user.id);
+      }
+      if (i.customId === 'lfg:leave') {
+        if (!joined.has(i.user.id)) return i.reply({ content: 'Du bist hier nicht eingetragen.', flags: 64 });
+        joined.delete(i.user.id);
+      }
+      if (i.customId === 'lfg:close') {
+        const isHost = i.user.id === author || i.memberPermissions.has(PermissionFlagsBits.ManageMessages);
+        if (!isHost) return i.reply({ content: 'Nur Host/Mods dürfen schließen.', flags: 64 });
+
+        const closed = EmbedBuilder.from(emb)
+          .setColor(0x888888)
+          .setTitle(emb.title.replace('🔎', '🔒 [AUFGELÖST]'))
+          .setFooter({ text: '[[LFG_STATE:CLOSED]]' });
+
+        await msg.edit({ embeds: [closed], components: [] });
+        return i.reply({ content: '🔒 Squad aufgelöst.', flags: 64 });
+      }
+
+      // Embed updaten
+      const newList = [...joined];
+      const updated = EmbedBuilder.from(emb);
+      const fields = updated.data.fields || [];
+      const idx = fields.findIndex(f => f.name === 'Teilnehmer');
+      const value = newList.length ? newList.map(id => `• <@${id}>`).join('\n') : '— noch frei —';
+
+      if (idx >= 0) fields[idx].value = value;
+      else fields.push({ name: 'Teilnehmer', value });
+
+      updated.setFields(fields);
+      updated.setDescription(updated.data.description.replace(/Slots:\s*\d+\/\d+/, `Slots: ${newList.length}/${slots}`));
+      updated.setFooter({ text: `[[LFG_STATE:${JSON.stringify({ author, slots, joined: newList })}]]` });
+
+      await msg.edit({ embeds: [updated] });
+      return i.reply({ content: i.customId === 'lfg:join' ? '✅ Beigetreten.' : '✅ Verlassen.', flags: 64 });
     }
 
-    return i.reply({ content: `✅ Rolle **${roleName}** hinzugefügt.`, flags: 64 });
   } catch (err) {
     console.error('interaction (button) error:', err);
     try { await i.reply({ content: '❌ Fehler bei der Ausführung.', flags: 64 }); } catch {}
