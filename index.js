@@ -171,6 +171,27 @@ client.on(Events.InteractionCreate, async (i) => {
   try {
     if (!i.isChatInputCommand()) return;
     if (!i.deferred && !i.replied) await i.deferReply({ ephemeral: true });
+// ================== MessageCreate Handler ==================
+client.on(Events.MessageCreate, async (msg) => {
+  try {
+    if (!msg.guild || msg.author.bot) return;
+
+    // prüfe ob Kanalname "rep-verifizierung" enthält (robust auch bei Emojis im Namen)
+    if (msg.channel.type === ChannelType.GuildText && msg.channel.name.toLowerCase().includes('rep-verifizierung')) {
+      if (msg.attachments.size > 0) {
+        const isImage = [...msg.attachments.values()].some(a => (a.contentType || '').startsWith('image/'));
+        if (isImage) {
+          await msg.reply(
+            '✅ **Screenshot erhalten!** Ein Mod prüft deinen REP und setzt dir die passende Rolle.\n' +
+            'ℹ️ Mods: `/rep user:@Name rank:<Rookie|Pro|All-Star|Superstar|Elite|Legend> level:<1–5>`'
+          );
+        }
+      }
+    }
+  } catch (err) {
+    console.error('MessageCreate error:', err);
+  }
+});
 
     if (i.commandName === 'setup2k') {
       await createInfoAndButtons(i.guild, i.channel);
@@ -336,20 +357,26 @@ client.on(Events.GuildMemberAdd, async (member) => {
     if (!welcome) return;
     const roleChannel = member.guild.channels.cache.find(ch => ch.type === ChannelType.GuildText && ch.name.includes('rolle-zuweisen'));
 
+    const embed = new EmbedBuilder()
+      .setColor(0x2ecc71)
+      .setTitle(`👋 Willkommen ${member.user.username}!`)
+      .setDescription(
+        `Schön, dass du in der **2K DACH NATION Community** gelandet bist!\n\n` +
+        `→ Bitte wähle zuerst dein **Land** in ${roleChannel ? `${roleChannel}` : '#rolle-zuweisen'}, um freigeschaltet zu werden.\n` +
+        `Danach kannst du Plattform, Position & Spielstil hinzufügen.`
+      )
+      .setThumbnail(member.user.displayAvatarURL({ size: 128 }))
+      .setFooter({ text: 'NBA2K DACH Community' });
+
     const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('goto:roles').setLabel('➡ Rollen auswählen').setStyle(ButtonStyle.Primary)
+      new ButtonBuilder().setCustomId('goto:roles').setLabel('→ Rollen auswählen').setStyle(ButtonStyle.Primary)
     );
 
-    await welcome.send({
-      content:
-        `👋 Willkommen ${member} in der **NBA2K DACH Community**!\n` +
-        `Bitte wähle zuerst dein **Land** in ${roleChannel ? `${roleChannel}` : '#rolle-zuweisen'}, um freigeschaltet zu werden.\n` +
-        `Danach kannst du Plattform, Position & Spielstil hinzufügen.`,
-      components: [row]
-    });
+    await welcome.send({ content: '[[WLC:' + Date.now() + ']]', embeds: [embed], components: [row] });
   } catch (err) {
     console.error('guildMemberAdd error:', err);
   }
 });
+
 
 client.login(TOKEN);
