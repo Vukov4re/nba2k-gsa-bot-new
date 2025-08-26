@@ -168,18 +168,19 @@ client.on(Events.InteractionCreate, async (i) => {
       await i.deferReply({ ephemeral: true });
       const ch = await ensureLfgChannel(i.guild);
 
-      const pinText =
-        const pinText =
-      '📌 **So funktioniert die Squad-Suche**\n' +
-      '• **/lfg**: Modus, Plattform, Slots\n' +
-      '• **Optional**:\n' +
-      '  – **squad_name**: freien Namen aus der Liste wählen (Autocomplete, z. B. „Squad Mamba“)\n' +
-      '  – **crossplay**: PS5/Xbox gemeinsam zulassen (✅/❌)\n' +
-      '• **Beitreten/Verlassen** per Button\n' +
-      '• Wenn **voll** → [VOLL], **privater Voice** in „🎤 Squads“ + **privater Thread**\n' +
-      '• **Auflösen**: Host/Mods beenden den Squad (Rolle/Voice wird gelöscht, Thread archiviert)\n' +
-      `• Standard-Ablauf: **${LFG_DEFAULT_TTL_MIN} Minuten**\n` +
-      '• Bitte respektvoll bleiben, kein Spam';
+const pinText = [
+  '📌 **So funktioniert die Squad-Suche**',
+  '• **/lfg**: Modus, Plattform, Slots',
+  '• **Optional**:',
+  '  – **squad_name**: freien Namen aus der Liste wählen (Autocomplete, z. B. „Squad Mamba“)',
+  '  – **crossplay**: PS5/Xbox gemeinsam zulassen (✅/❌)',
+  '• **Beitreten/Verlassen** per Button',
+  '• Wenn **voll** → [VOLL], **privater Voice** in „🎤 Squads“ + **privater Thread**',
+  '• **Auflösen**: Host/Mods beenden den Squad (Rolle/Voice wird gelöscht, Thread archiviert)',
+  `• Standard-Ablauf: **${LFG_DEFAULT_TTL_MIN} Minuten**`,
+  '• Bitte respektvoll bleiben, kein Spam'
+].join('\n');
+
 
 
       const recent = await ch.messages.fetch({ limit: 20 }).catch(() => null);
