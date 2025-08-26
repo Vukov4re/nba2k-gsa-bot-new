@@ -295,27 +295,61 @@ client.on(Events.InteractionCreate, async (i) => {
       return i.editReply(`✅ LFG Kanal bereit: ${lfg}`);
     }
 
-    // /lfg
-    if (i.commandName === 'lfg') {
-      const mode = i.options.getString('modus', true);
-      const platform = i.options.getString('plattform', true);
-      const positions = i.options.getString('positionen', true);
-      const slots = i.options.getInteger('slots', true);
-      const joined = [i.user.id];
+ 
+   // ----- /lfg -----
+if (i.commandName === 'lfg') {
+  const mode = i.options.getString('modus', true);
+  const platform = i.options.getString('plattform', true);
+  const positions = i.options.getString('positionen', true);
+  const slots = i.options.getInteger('slots', true);
+  const crossplay = i.options.getBoolean('crossplay') ?? false;
+  let squadName = i.options.getString('squad_name')?.trim();
 
-      const embed = new EmbedBuilder()
-        .setColor(0x00A86B)
-        .setTitle(`🔎 Squad – ${mode} (${platform})`)
-        .setDescription(`**Gesucht:** ${positions}\n**Slots:** ${joined.length}/${slots}\n👤 **Host:** <@${i.user.id}>`)
-        .addFields({ name: 'Teilnehmer', value: joined.map(id => `• <@${id}>`).join('\n') })
-        .setFooter({ text: `[[LFG_STATE:${JSON.stringify({ author: i.user.id, slots, joined })}]]` })
-        .setTimestamp();
+  // Fallback: wenn kein Name eingegeben → nimm den ersten aus dem Pool
+  if (!squadName) {
+    squadName = NAME_POOL[ Math.floor(Math.random() * NAME_POOL.length) ];
+  }
 
-      const post = await i.channel.send({ embeds: [embed], components: [buildLfgRow('pending', false)] });
-      await post.edit({ components: [buildLfgRow(post.id, false)] });
+  const joined = [i.user.id];
 
-      return i.reply({ content: `✅ Squad erstellt: ${post.url}`, ephemeral: true });
-    }
+  const embed = new EmbedBuilder()
+    .setColor(0x00A86B)
+    .setTitle(`🔎 ${squadName} – ${mode} (${platform})`)
+    .setDescription(
+      `**Gesucht:** ${positions}\n` +
+      `**Slots:** ${joined.length}/${slots}\n` +
+      `**Crossplay:** ${crossplay ? '✅' : '❌'}\n` +
+      `👤 **Host:** <@${i.user.id}>`
+    )
+    .addFields({ name: 'Teilnehmer', value: joined.map(id => `• <@${id}>`).join('\n') })
+    .setFooter({ text: `[[LFG_STATE:${JSON.stringify({ author: i.user.id, slots, joined, crossplay, name: squadName })}]]` })
+    .setTimestamp();
+
+  const post = await i.channel.send({ embeds: [embed], components: [buildLfgRow('pending', false)] });
+  await post.edit({ components: [buildLfgRow(post.id, false)] });
+
+  return i.reply({ content: `✅ Squad erstellt: ${post.url}`, ephemeral: true });
+}
+// ===== Autocomplete für /lfg squad_name =====
+client.on(Events.InteractionCreate, async (i) => {
+  if (!i.isAutocomplete()) return;
+  if (i.commandName !== 'lfg') return;
+
+  const focused = i.options.getFocused(true);
+  if (focused.name !== 'squad_name') return;
+
+  const q = (focused.value || '').toLowerCase();
+  // einfache Filterung nach Eingabe, max. 25 Vorschläge
+  const suggestions = NAME_POOL
+    .filter(n => n.toLowerCase().includes(q))
+    .slice(0, 25)
+    .map(n => ({ name: n, value: n }));
+
+  try {
+    await i.respond(suggestions.length ? suggestions : [{ name: 'z. B. "Squad Mamba"', value: 'Squad Mamba' }]);
+  } catch { /* ignore */ }
+});
+
 
     // /setuprep
     if (i.commandName === 'setuprep') {
