@@ -6,17 +6,7 @@ import {
   ActionRowBuilder, ButtonBuilder, ButtonStyle,
   EmbedBuilder
 } from 'discord.js';
-// optional – wenn vorhanden
-import { SQUAD_NAME_POOL } from './config/squads.js';
-const NAME_POOL = Array.isArray(SQUAD_NAME_POOL) && SQUAD_NAME_POOL.length
-  ? SQUAD_NAME_POOL
-  : [
-    'Squad Mamba','Squad Vino','Squad Air','Squad HisAirness','Squad BlackJesus',
-    'Squad KingJames','Squad ChosenOne','Squad Magic','Squad Skyhook','Squad Logo',
-    'Squad Diesel','Squad Aristotle','Squad Flash','Squad BigTicket','Squad TheGlove',
-    'Squad RainMan','Squad TheTruth','Squad TheAnswer','Squad AI3','Squad CP3',
-    'Squad TheBeard','Squad Unibrow','Squad GreekFreak','Squad TheJoker','Squad DameTime',
-  ];
+
 
 /* ================== Client ================== */
 const TOKEN = (process.env.DISCORD_TOKEN || process.env.TOKEN || '').trim();
