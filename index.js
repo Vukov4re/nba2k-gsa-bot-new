@@ -417,14 +417,14 @@ if (i.isChatInputCommand() && i.commandName === 'announce') {
     const sent = await ch.send({ embeds: [embed], content: '@everyone', components: [row] });
 
     // optional pinnen
-    await sent.pin().catch(() => { /* egal wenn pinnen nicht geht */ });
-
-    return i.reply({ content: `✅ Ankündigung wurde in ${ch} gepostet und angepinnt.`, ephemeral: true });
+       await sent.pin().catch(() => {});
+    return i.reply({ content: '✅ ...', ephemeral: true });
   } catch (err) {
     console.error('announce error:', err);
     return i.reply({ content: '❌ Fehler beim Senden der Ankündigung.', ephemeral: true });
   }
 }
+
 
 
   // Nachricht senden
