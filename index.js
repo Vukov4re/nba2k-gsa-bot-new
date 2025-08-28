@@ -388,31 +388,44 @@ client.on(Events.InteractionCreate, async (i) => {
       try { await setupMediaOnly(i.guild); } catch {}
       return i.editReply(`✅ Setup aktualisiert.\n• Rollen-Buttons in ${chRoles}\n• Verifizierung in ${chVerify}`);
 
-      // /announce
-if (i.commandName === 'announce') {
-  if (!i.memberPermissions.has(PermissionFlagsBits.Administrator)) {
-    return i.reply({ content: '❌ Nur Admins können diesen Command nutzen.', ephemeral: true });
+     // /announce
+if (i.isChatInputCommand() && i.commandName === 'announce') {
+  try {
+    if (!i.memberPermissions.has(PermissionFlagsBits.Administrator)) {
+      return i.reply({ content: '❌ Nur Admins können diesen Command nutzen.', ephemeral: true });
+    }
+
+    const ch     = i.options.getChannel('channel');
+    const title  = i.options.getString('titel');
+    const msg    = i.options.getString('nachricht');
+    const emoji  = i.options.getString('emoji') || '📢';
+
+    const embed = new EmbedBuilder()
+      .setTitle(`${emoji} ${title}`)
+      .setDescription(`${msg}\n\n@everyone`)
+      .setColor(0xff0000)
+      .setTimestamp();
+
+    // 🔗 Button zum Gamertag-Kanal – HIER die echte URL einsetzen!
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setLabel('🎮 Gamertag eintragen')
+        .setStyle(ButtonStyle.Link)
+        .setURL('https://discord.com/channels/<SERVER_ID>/<GAMERTAG_CHANNEL_ID>')
+    );
+
+    const sent = await ch.send({ embeds: [embed], content: '@everyone', components: [row] });
+
+    // optional pinnen
+    await sent.pin().catch(() => { /* egal wenn pinnen nicht geht */ });
+
+    return i.reply({ content: `✅ Ankündigung wurde in ${ch} gepostet und angepinnt.`, ephemeral: true });
+  } catch (err) {
+    console.error('announce error:', err);
+    return i.reply({ content: '❌ Fehler beim Senden der Ankündigung.', ephemeral: true });
   }
+}
 
-  const ch = i.options.getChannel('channel');
-  const title = i.options.getString('titel');
-  const msg = i.options.getString('nachricht');
-  const emoji = i.options.getString('emoji') || '📢';
-
-  // Embed bauen
-  const embed = new EmbedBuilder()
-    .setTitle(`${emoji} ${title}`)
-    .setDescription(`${msg}\n\n@everyone`)
-    .setColor(0xff0000)
-    .setTimestamp();
-
-  // Button zum Gamertag-Kanal
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setLabel('🎮 Gamertag eintragen')
-      .setStyle(ButtonStyle.Link)
-      .setURL('https://discord.com/channels/YOUR_SERVER_ID/YOUR_CHANNEL_ID') // Gamertag-Kanal ID hier ersetzen!
-  );
 
   // Nachricht senden
   const sent = await ch.send({ embeds: [embed], content: '@everyone', components: [row] });
