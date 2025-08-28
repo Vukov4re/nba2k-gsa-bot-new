@@ -42,6 +42,30 @@ const commands = [
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .setDMPermission(false),
 
+  // ======== announce (nur Admins) =========
+commands.push(
+  new SlashCommandBuilder()
+    .setName('announce')
+    .setDescription('Poste eine Ankündigung mit @everyone (nur Admins).')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator) // nur Admins
+    .addChannelOption(o =>
+      o.setName('channel')
+        .setDescription('In welchem Kanal soll die Ankündigung erscheinen?')
+        .addChannelTypes(ChannelType.GuildText)
+        .setRequired(true))
+    .addStringOption(o =>
+      o.setName('titel')
+        .setDescription('Titel der Ankündigung')
+        .setRequired(true))
+    .addStringOption(o =>
+      o.setName('nachricht')
+        .setDescription('Inhalt der Ankündigung')
+        .setRequired(true))
+    .addStringOption(o =>
+      o.setName('emoji')
+        .setDescription('Optionales Emoji für den Titel')
+        .setRequired(false))
+);
   // nur Mods/Admins (ManageRoles)
   new SlashCommandBuilder()
     .setName('rep')
