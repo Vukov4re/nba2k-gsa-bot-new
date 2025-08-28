@@ -42,30 +42,44 @@ const commands = [
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .setDMPermission(false),
 
-  // ======== announce (nur Admins) =========
+ // ======== announce (nur Admins) ========
+import { SlashCommandBuilder, PermissionFlagsBits, ChannelType } from 'discord.js';
+
+// … deine anderen commands.push(...) stehen hier schon …
+
 commands.push(
   new SlashCommandBuilder()
     .setName('announce')
     .setDescription('Poste eine Ankündigung mit @everyone (nur Admins).')
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator) // nur Admins
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addChannelOption(o =>
-      o.setName('channel')
+      o
+        .setName('channel')
         .setDescription('In welchem Kanal soll die Ankündigung erscheinen?')
         .addChannelTypes(ChannelType.GuildText)
-        .setRequired(true))
+        .setRequired(true)
+    )
     .addStringOption(o =>
-      o.setName('titel')
+      o
+        .setName('titel')
         .setDescription('Titel der Ankündigung')
-        .setRequired(true))
+        .setRequired(true)
+    )
     .addStringOption(o =>
-      o.setName('nachricht')
+      o
+        .setName('nachricht')
         .setDescription('Inhalt der Ankündigung')
-        .setRequired(true))
+        .setRequired(true)
+    )
     .addStringOption(o =>
-      o.setName('emoji')
+      o
+        .setName('emoji')
         .setDescription('Optionales Emoji für den Titel')
-        .setRequired(false))
+        .setRequired(false)
+    )
 );
+// ======== /announce Ende ========
+
 
   // nur Mods/Admins (ManageRoles)
   new SlashCommandBuilder()
