@@ -66,6 +66,7 @@ commands.push(
         .setDescription('Optionales Emoji für den Titel')
         .setRequired(false))
 );
+
   // nur Mods/Admins (ManageRoles)
   new SlashCommandBuilder()
     .setName('rep')
