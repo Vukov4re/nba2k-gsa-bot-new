@@ -387,6 +387,43 @@ client.on(Events.InteractionCreate, async (i) => {
       const { chRoles, chVerify } = await createInfoAndButtons(i.guild);
       try { await setupMediaOnly(i.guild); } catch {}
       return i.editReply(`✅ Setup aktualisiert.\n• Rollen-Buttons in ${chRoles}\n• Verifizierung in ${chVerify}`);
+
+      // /announce
+if (i.commandName === 'announce') {
+  if (!i.memberPermissions.has(PermissionFlagsBits.Administrator)) {
+    return i.reply({ content: '❌ Nur Admins können diesen Command nutzen.', ephemeral: true });
+  }
+
+  const ch = i.options.getChannel('channel');
+  const title = i.options.getString('titel');
+  const msg = i.options.getString('nachricht');
+  const emoji = i.options.getString('emoji') || '📢';
+
+  // Embed bauen
+  const embed = new EmbedBuilder()
+    .setTitle(`${emoji} ${title}`)
+    .setDescription(`${msg}\n\n@everyone`)
+    .setColor(0xff0000)
+    .setTimestamp();
+
+  // Button zum Gamertag-Kanal
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setLabel('🎮 Gamertag eintragen')
+      .setStyle(ButtonStyle.Link)
+      .setURL('https://discord.com/channels/YOUR_SERVER_ID/YOUR_CHANNEL_ID') // Gamertag-Kanal ID hier ersetzen!
+  );
+
+  // Nachricht senden
+  const sent = await ch.send({ embeds: [embed], content: '@everyone', components: [row] });
+
+  try {
+    await sent.pin();
+  } catch (err) {
+    console.error('Konnte Nachricht nicht anpinnen:', err);
+  }
+
+  await i.reply({ content: `✅ Ankündigung wurde in ${ch} gepostet und angepinnt.`, ephemeral: true });
     }
 
     // /setuprep – nur Verifizierungskanal
