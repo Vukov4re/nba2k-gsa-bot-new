@@ -283,6 +283,14 @@ async function scheduleReminderLoop(guild, userId, first = false) {
 }
 
 // ================= Welcome Embed + Button =================
+import {
+  ChannelType,
+  EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+} from 'discord.js';
+
 async function sendWelcomeWithButton(member) {
   const guild = member.guild;
 
@@ -302,30 +310,36 @@ async function sendWelcomeWithButton(member) {
   );
   if (already) return;
 
+  // Channel-Mention vorbereiten
+  const roleMention = roleChannel ? `<#${roleChannel.id}>` : '`#rolle-zuweisen`';
+
   const embed = new EmbedBuilder()
     .setColor(0x2ecc71)
     .setTitle(`👋 Willkommen ${member.user.username}!`)
     .setDescription(
       `Schön, dass du in der **${guild.name}** gelandet bist!\n\n` +
-      `➡ Bitte wähle zuerst dein **Land** in ${roleChannel ?? '#rolle-zuweisen'}, um freigeschaltet zu werden.\n` +
-      `Danach kannst du Plattform, Position & Spielstil hinzufügen.`
+      `➡ Bitte wähle zuerst dein **Land** in ${roleMention}, um freigeschaltet zu werden.\n` +
+      `Danach kannst du Plattform, Position & Spielstil hinzufügen.\n\n` +
+      `NBA2K DACH Community`
     )
-    .setThumbnail(member.user.displayAvatarURL({ dynamic: true }))
+    .setThumbnail(member.user.displayAvatarURL({ size: 256 }))
     .setFooter({ text: 'NBA2K DACH Community' });
 
-  const row = new ActionRowBuilder().addComponents(
+  // Statt Custom-Button => Link-Button direkt zum Kanal
+  const row = roleChannel ? new ActionRowBuilder().addComponents(
     new ButtonBuilder()
-      .setCustomId('goto:roles')
       .setLabel('→ Rollen auswählen')
-      .setStyle(ButtonStyle.Primary)
-  );
+      .setStyle(ButtonStyle.Link)
+      .setURL(`https://discord.com/channels/${guild.id}/${roleChannel.id}`)
+  ) : null;
 
   await welcome.send({
     content: `[[WLC:${member.id}]]`,
     embeds: [embed],
-    components: [row]
+    components: row ? [row] : [],
   }).catch(() => {});
 }
+
 
 // ================= Countdown: einmalig in #ankündigungen posten =================
 async function postReleaseCountdown(guild) {
